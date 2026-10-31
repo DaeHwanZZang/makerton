@@ -136,7 +136,7 @@ input { font: inherit; }
 .summary-row:last-child { border-bottom: 0; }
 .summary-row dt { color: var(--muted); }
 .summary-row dd { margin: 0; font-weight: 800; }
-.summary-row dd.empty { color: var(--muted); font-weight: 700; }
+.summary-row dd.empty { color: var(--muted); font-weight: 700; margin: 0; padding: 0; border: 0; font-size: inherit; text-align: right; }
 
 /* ---------- 하단 버튼 영역 ---------- */
 .bottombar {
@@ -238,7 +238,46 @@ input { font: inherit; }
 .bar { height: 6px; margin-top: 10px; border-radius: 99px; background: #edf1f1; overflow: hidden; }
 .bar > span { display: block; height: 100%; background: var(--brand); }
 
+/* ---------- v4: 호실 키패드·보관 구분·배송 불가 보관함 ---------- */
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+.unit-guide {
+  display: flex; align-items: center; gap: 10px; margin: -2px 0 14px; padding: 14px 18px;
+  border-radius: 14px; background: var(--brand-soft); color: var(--brand-ink); font-size: 16px; font-weight: 600;
+}
+.unit-guide svg { flex: none; }
+.unit-grid { display: grid; grid-template-columns: 1fr 300px; gap: 28px; align-items: start; }
+.key:disabled { opacity: .3; cursor: not-allowed; background: #f5f7f7; }
+.toggle-row {
+  width: 100%; display: flex; align-items: center; gap: 16px; padding: 18px 22px; text-align: left;
+  background: #fff; border: 1.5px solid var(--line); border-radius: 16px; color: var(--ink-2);
+}
+.toggle-row.on { border-color: var(--warn); background: var(--warn-soft); }
+.toggle-row.on .option-icon { color: var(--warn); }
+.toggle-text { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.toggle-text b { font-size: 18px; color: var(--ink); }
+.toggle-text small { color: var(--muted); font-size: 13px; }
+.switch { width: 52px; height: 30px; border-radius: 99px; background: #d9e1e1; position: relative; flex: none; transition: background .15s; }
+.switch > span { position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.toggle-row.on .switch { background: var(--warn); }
+.toggle-row.on .switch > span { transform: translateX(22px); }
+.port-wide { width: 260px; height: 150px; font-size: 16px; }
+.doors .door { width: 104px; height: 140px; font-size: 22px; }
+.tag { display: inline-block; font-size: 12px; font-weight: 800; padding: 3px 8px; border-radius: 6px; vertical-align: middle; }
+.tag-brand { background: var(--brand-soft); color: var(--brand-ink); }
+.tag-warn { background: var(--warn-soft); color: var(--warn); }
+.tag-danger { background: var(--danger-soft); color: var(--danger); }
+.tag-muted { background: #f1f4f4; color: var(--muted); }
+.building-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 26px; }
+.building-chips .option { min-height: 64px; padding: 12px; flex-direction: row; }
+.building-chips .option-title { font-size: 18px; }
+.modal-wide { max-width: 560px; }
+.batch-doors { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 24px; padding: 14px; border-radius: 14px; background: var(--brand-soft); color: var(--brand-ink); }
+.launcher-grid-3 { grid-template-columns: repeat(3, 1fr); }
+
 @media (max-width: 900px) {
+  .unit-grid, .grid-2 { grid-template-columns: 1fr; }
+  .launcher-grid-3 { grid-template-columns: 1fr; }
+  .doors .door { width: 60px; height: 96px; font-size: 16px; }
   .topbar { grid-template-columns: 1fr; justify-items: center; gap: 10px; padding: 12px 16px; }
   .topbar-left, .topbar-right { justify-content: center; flex-wrap: wrap; }
   .stepper { gap: 16px; }

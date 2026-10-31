@@ -1,12 +1,12 @@
 """계정 인증과 세션 관리.
 
-비밀번호는 bcrypt 해시로만 저장한다. 세션은 메모리에 두며, 서버를 재시작하면
-다시 로그인해야 한다(키오스크는 60초 무조작 시 자동 로그아웃하므로 문제없음).
+비밀번호는 bcrypt 해시로만 저장한다. 세션은 DB 에 토큰 해시(sha256)로 저장해
+서버를 재시작해도 세대 웹·관리자 웹 로그인이 유지된다.
 """
 from __future__ import annotations
 
+import hashlib
 import secrets
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import bcrypt
@@ -25,45 +25,52 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-@dataclass
-class Session:
-    token: str
-    user_id: str
-    dong: int
-    ho: int
-    client_id: str
-    expires_at: datetime
-    ttl_sec: int = config.SESSION_TTL_SEC
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
-class SessionManager:
-    def __init__(self):
-        self._sessions: dict[str, Session] = {}
+class Sessions:
+    """kind: USER(세대 계정) / ADMIN. channel: KIOSK / RESIDENT / ADMIN."""
 
-    def create(self, user_id: str, dong: int, ho: int, client_id: str, now: datetime,
-               ttl_sec: int = config.SESSION_TTL_SEC) -> Session:
-        token = "tok_" + secrets.token_urlsafe(18)
-        session = Session(token, user_id, dong, ho, client_id,
-                          now + timedelta(seconds=ttl_sec), ttl_sec)
-        self._sessions[token] = session
-        return session
+    def __init__(self, store):
+        self.store = store
 
-    def get(self, token: str | None, now: datetime) -> Session | None:
-        session = self._sessions.get(token or "")
-        if not session:
+    def create(self, *, kind: str, user_id: str, channel: str, client_id: str, now: datetime,
+               ttl_sec: int, building: int | None = None, unit: int | None = None) -> str:
+        token = "tok_" + secrets.token_urlsafe(24)
+        self.store.insert_session({
+            "token_hash": token_hash(token), "kind": kind, "user_id": user_id,
+            "building": building, "unit": unit, "channel": channel, "client_id": client_id,
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=ttl_sec)).isoformat(), "ttl_sec": ttl_sec})
+        return token
+
+    def get(self, token: str | None, now: datetime, kind: str) -> dict | None:
+        """유효하면 만료 시각을 연장해 돌려준다."""
+        if not token or not isinstance(token, str):
             return None
-        if session.expires_at <= now:
-            self._sessions.pop(session.token, None)
+        hashed = token_hash(token)
+        session = self.store.get_session(hashed)
+        if not session or session["kind"] != kind:
             return None
-        session.expires_at = now + timedelta(seconds=session.ttl_sec)
+        if session["expires_at"] <= now.isoformat():
+            self.store.delete_session(hashed)
+            return None
+        expires = (now + timedelta(seconds=session["ttl_sec"])).isoformat()
+        self.store.touch_session(hashed, expires)
+        session["expires_at"] = expires
         return session
 
     def revoke(self, token: str | None):
-        self._sessions.pop(token or "", None)
+        if token and isinstance(token, str):
+            self.store.delete_session(token_hash(token))
 
-    def for_household(self, dong: int, ho: int) -> list[Session]:
-        return [s for s in self._sessions.values() if s.dong == dong and s.ho == ho]
+    def revoke_user(self, kind: str, user_id: str, keep_token: str | None = None) -> int:
+        return self.store.delete_user_sessions(kind, user_id,
+                                               token_hash(keep_token) if keep_token else None)
+
+    def household(self, building: int, unit: int, now: datetime) -> list[dict]:
+        return self.store.household_sessions(building, unit, now.isoformat())
 
     def purge(self, now: datetime):
-        for token in [t for t, s in self._sessions.items() if s.expires_at <= now]:
-            del self._sessions[token]
+        self.store.purge_sessions(now.isoformat())

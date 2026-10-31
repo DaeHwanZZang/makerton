@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102e40">
+  <title>LastGate 관리자</title>
+  <link rel="stylesheet" href="/assets/admin.css">
+  <script type="module" src="/assets/admin.js"></script>
+</head>
+<body>
+  <!-- 로그인 -->
+  <section class="login-view" id="login-view">
+    <form class="login-card" id="login-form" novalidate>
+      <div class="brand"><span class="brand-mark">⬡</span><div><strong>LastGate 관리자</strong><small>보관소 PC 전용</small></div></div>
+      <label>아이디<input name="adminId" value="admin" autocomplete="username" required></label>
+      <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn btn-primary" type="submit">로그인</button>
+      <p class="alert alert-error" id="login-alert" hidden></p>
+      <p class="hint">처음 설치하면 비밀번호는 <code>admin1234</code> 입니다 (서버 환경변수 LASTGATE_ADMIN_PASSWORD 로 바꿀 수 있음). 로그인 후 바로 바꾸세요.</p>
+    </form>
+  </section>
+
+  <!-- 본문 -->
+  <div class="app" id="app" hidden>
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">⬡</span><div><strong>LastGate</strong><small id="site-label">초기 설정 전</small></div></div>
+      <nav class="menu" id="menu">
+        <button type="button" data-page="init" data-need="uninit">초기 설정</button>
+        <button type="button" data-page="settings" data-need="init">설정 변경</button>
+        <button type="button" data-page="accounts" data-need="init">세대 계정</button>
+        <button type="button" data-page="reset-password" data-need="init">비밀번호 초기화</button>
+        <button type="button" data-page="occupant" data-need="init">입주자 변경</button>
+        <button type="button" data-page="storage" data-need="init">보관 현황</button>
+        <button type="button" data-page="code-pickup" data-need="init">코드로 수령 처리</button>
+        <button type="button" data-page="events">작업 기록</button>
+        <button type="button" data-page="factory-reset" data-need="init" class="danger">전체 재설정</button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="conn" id="conn"><i></i><span id="conn-text">연결 확인 중</span></span>
+        <button type="button" class="btn btn-ghost" data-page="admin-password">관리자 비밀번호</button>
+        <button type="button" class="btn btn-ghost" id="logout-button">로그아웃</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <div class="alert alert-warn" id="default-password-banner" hidden>
+        기본 관리자 비밀번호(admin1234)를 쓰고 있습니다. 먼저 바꿔 주세요.
+        <button type="button" class="btn btn-small" data-page="admin-password">비밀번호 바꾸기</button>
+      </div>
+
+      <!-- 초기 설정 / 설정 변경 (같은 양식) -->
+      <section class="page" id="page-site" hidden>
+        <header class="page-head"><h1 id="site-title">초기 설정</h1><p id="site-desc"></p></header>
+        <form id="site-form" class="site-grid" novalidate>
+          <div class="panel">
+            <h2>사이트</h2>
+            <div class="row-3">
+              <label>사이트 이름<input name="name" maxlength="40" placeholder="예: 가천대 글로벌캠퍼스" required></label>
+              <label>건물 용어<input name="building_term" maxlength="6" value="건물" required></label>
+              <label>호실 용어<input name="unit_term" maxlength="6" value="호실" required></label>
+            </div>
+            <p class="hint">용어는 키오스크·세대 웹 화면에 그대로 나옵니다. 아파트라면 '동'·'호', 캠퍼스라면 '건물'·'호실'.</p>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h2>건물</h2><button type="button" class="btn btn-small" id="add-building">+ 건물 추가</button></div>
+            <p class="hint">건물 번호(1~999)는 세대 계정 아이디 앞부분이라 <b>만든 뒤에는 바꿀 수 없습니다</b>. 호실은 층×100+호 형식 범위(예: 101 ~ 614)로 적고,
+              없는 호실과 범위 밖 추가 호실은 쉼표로 적습니다 (예: 404, 501~514).</p>
+            <div class="buildings" id="buildings"></div>
+          </div>
+
+          <div class="panel">
+            <h2>보관소·배송</h2>
+            <div class="row-3">
+              <label>그리드 보관함 수<input name="grid_bins" type="number" min="1" max="5000" required></label>
+              <label>배송 불가 보관함(문) 수<input name="oversize_doors" type="number" min="0" max="500" required></label>
+              <label>로봇 대수<input name="robots" type="number" min="1" max="20" required></label>
+            </div>
+            <div class="row-3">
+              <label>배송 시작 시각<input name="service_start" type="time" required></label>
+              <label>배송 종료 시각<input name="service_end" type="time" required></label>
+              <label class="check"><input name="second_seat_same_building" type="checkbox"> 예약 칸 두 번째 자리는 같은 건물만</label>
+            </div>
+            <p class="hint">보관함 1칸(또는 배송 불가 보관함 문 1개)에 물품 1개만 들어갑니다. 배송 시간 예약은 10분 단위, 칸마다 2자리입니다.</p>
+          </div>
+
+          <div class="panel preview" id="site-preview">
+            <h2>미리보기</h2>
+            <div id="preview-body"><p class="hint">입력하면 만들어질 계정 수와 호실 안내가 여기에 나옵니다.</p></div>
+          </div>
+
+          <div class="actions">
+            <button type="button" class="btn" id="site-revert" hidden>되돌리기</button>
+            <button type="submit" class="btn btn-primary" id="site-submit">초기 설정 저장</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- 세대 계정 -->
+      <section class="page" id="page-accounts" hidden>
+        <header class="page-head"><h1>세대 계정</h1><p>계정 아이디는 <code>건물번호-호실</code>, 초기 비밀번호는 1234 입니다.</p></header>
+        <div class="stats" id="account-stats"></div>
+        <form class="toolbar" id="account-filter">
+          <select name="building" id="account-building"></select>
+          <input name="q" placeholder="호실 검색 (예: 4)" inputmode="numeric">
+          <button class="btn" type="submit">조회</button>
+        </form>
+        <div class="table-wrap"><table class="table" id="account-table"></table></div>
+      </section>
+
+      <!-- 비밀번호 초기화 / 입주자 변경 -->
+      <section class="page" id="page-account-action" hidden>
+        <header class="page-head"><h1 id="action-title"></h1><p id="action-desc"></p></header>
+        <form class="panel narrow" id="action-form" novalidate>
+          <label><span class="building-term">건물</span><select name="building" id="action-building"></select></label>
+          <label><span class="unit-term">호실</span><input name="unit" inputmode="numeric" maxlength="5" required><small class="hint" id="action-guide"></small></label>
+          <p class="alert" id="action-result" hidden></p>
+          <button class="btn btn-primary" type="submit" id="action-submit"></button>
+        </form>
+      </section>
+
+      <!-- 보관 현황 -->
+      <section class="page" id="page-storage" hidden>
+        <header class="page-head"><h1>보관 현황</h1><p>보관·배송 중인 물품과 보관함 사용량입니다. 10초마다 새로 불러옵니다.</p></header>
+        <div class="stats" id="storage-stats"></div>
+        <div class="toolbar">
+          <select id="storage-area"><option value="">전체 구역</option><option value="GRID">그리드 보관함</option><option value="OVERSIZE">배송 불가 보관함</option></select>
+          <select id="storage-mode"><option value="">전체 수령 방식</option><option value="ROBOT">로봇 배송</option><option value="DIRECT">직접 수령</option></select>
+          <input id="storage-q" placeholder="호실·접수번호 검색">
+        </div>
+        <div class="table-wrap"><table class="table" id="storage-table"></table></div>
+      </section>
+
+      <!-- 코드로 수령 처리 -->
+      <section class="page" id="page-code-pickup" hidden>
+        <header class="page-head"><h1>코드로 수령 처리</h1><p>세대인이 키오스크를 쓰기 어려울 때, 세대 웹의 인증코드 6자리로 물품을 꺼내 줍니다.</p></header>
+        <form class="panel narrow" id="code-form" novalidate>
+          <label>인증코드<input name="code" inputmode="numeric" maxlength="6" placeholder="6자리" required></label>
+          <button class="btn btn-primary" type="submit">조회</button>
+        </form>
+        <div class="panel narrow" id="code-result" hidden></div>
+      </section>
+
+      <!-- 작업 기록 -->
+      <section class="page" id="page-events" hidden>
+        <header class="page-head"><h1>작업 기록</h1><p>관리자 작업 기록입니다. '전체 기록'을 켜면 보관·수령 기록도 함께 봅니다.</p></header>
+        <div class="toolbar"><label class="check"><input type="checkbox" id="events-all"> 전체 기록</label><button class="btn" type="button" id="events-reload">새로고침</button></div>
+        <div class="table-wrap"><table class="table" id="events-table"></table></div>
+      </section>
+
+      <!-- 전체 재설정 -->
+      <section class="page" id="page-factory-reset" hidden>
+        <header class="page-head"><h1>전체 재설정</h1><p>현장 설정, 세대 계정, 물품 기록을 모두 지우고 초기 설정 전 상태로 돌립니다. 되돌릴 수 없습니다.</p></header>
+        <form class="panel narrow danger-panel" id="reset-form" novalidate>
+          <p>보관·배송 중인 물품이 하나라도 있으면 재설정할 수 없습니다. 작업 기록과 관리자 계정은 남습니다.</p>
+          <label>확인을 위해 사이트 이름 <b id="reset-name"></b> 을 그대로 입력<input name="confirmName" required></label>
+          <label>관리자 비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+          <p class="alert alert-error" id="reset-alert" hidden></p>
+          <button class="btn btn-danger" type="submit">전체 재설정</button>
+        </form>
+      </section>
+
+      <!-- 관리자 비밀번호 -->
+      <section class="page" id="page-admin-password" hidden>
+        <header class="page-head"><h1>관리자 비밀번호</h1><p>영문과 숫자를 섞어 8자 이상. 바꾸면 다른 곳의 관리자 로그인은 끝납니다.</p></header>
+        <form class="panel narrow" id="admin-password-form" novalidate>
+          <label>현재 비밀번호<input name="currentPassword" type="password" autocomplete="current-password" required></label>
+          <label>새 비밀번호<input name="newPassword" type="password" autocomplete="new-password" required></label>
+          <label>새 비밀번호 확인<input name="confirmPassword" type="password" autocomplete="new-password" required></label>
+          <p class="alert alert-error" id="admin-password-alert" hidden></p>
+          <button class="btn btn-primary" type="submit">저장</button>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>

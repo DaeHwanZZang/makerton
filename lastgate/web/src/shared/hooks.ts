@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { TOPICS } from "./config";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { TOPICS, type Site, type SiteMessage } from "./config";
 import { LockerClient, type Msg } from "./mqtt";
 
 /** 화면 수명 동안 MQTT 클라이언트 하나를 유지한다. */
@@ -16,6 +16,28 @@ export function useLocker(kioskId: string) {
     };
   }, [kioskId]);
   return { client, connected };
+}
+
+/**
+ * 현장 설정(retained). loaded=false 는 아직 수신 전, site=null 은 관리자 초기 설정 전.
+ * 처음 받은 뒤 버전이 바뀌면 idle(진행 중인 작업 없음)일 때 화면을 새로 고친다.
+ */
+export function useSite(client: LockerClient | null, idle: boolean) {
+  const [msg, setMsg] = useState<SiteMessage | null>(null);
+  const firstVersion = useRef<number | null>(null);
+  useEffect(() => {
+    if (!client) return;
+    return client.onSite((m) => {
+      if (firstVersion.current === null) firstVersion.current = m.version;
+      setMsg(m);
+    });
+  }, [client]);
+  const stale = msg !== null && firstVersion.current !== null && msg.version !== firstVersion.current;
+  useEffect(() => {
+    if (stale && idle) window.location.reload();
+  }, [stale, idle]);
+  const site: Site | null = msg?.initialized ? msg.site : null;
+  return { site, loaded: msg !== null, stale };
 }
 
 /** 카운트다운 표시용 현재 시각 (ms) */

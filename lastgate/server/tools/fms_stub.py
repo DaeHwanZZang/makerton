@@ -40,6 +40,9 @@ def main():
                                    "timestamp": config.now_kst().isoformat()}, retain=True)
 
     def arrive(job_id: str):
+        if ("JOB_CANCELLED", job_id) in seen:    # 도착 전 취소 (실제 FMS 는 도착 후에만 처리 — README 참고)
+            publish_state(status="대기 중", location="공동 보관소", available=True)
+            return
         publish_state(status="적재 중", location="공동 보관소")
         publish({"type": "ROBOT_ARRIVED", "job_id": job_id, "robot_id": args.robot})
 
@@ -48,8 +51,8 @@ def main():
             return
         seen.add(("JOB", msg["job_id"]))
         s = msg["summary"]
-        print(f"\n[FMS] {msg['job_id']} 수신 (예상 {len(msg['items'])}건, 동 {s['dongs']}) "
-              f"→ {args.arrive:.0f}초 뒤 {args.robot} 보관소 도착")
+        print(f"\n[FMS] {msg['job_id']} 수신 ({s.get('kind')}, 예상 {len(msg['items'])}건, "
+              f"건물 {s['buildings']}) → {args.arrive:.0f}초 뒤 {args.robot} 보관소 도착")
         publish_state(status="보관소로 이동 중", available=False)
         threading.Timer(args.arrive, arrive, [msg["job_id"]]).start()
 
@@ -64,15 +67,14 @@ def main():
             return
         if kind != "BUNDLE_CONFIRMED":
             return
-        s = msg["summary"]
-        print(f"[FMS] {job_id} 적재 확정 · {len(msg['items'])}건 · {s['weight_kg']}kg")
+        print(f"[FMS] {job_id} 적재 확정 · 보관함 {len(msg['items'])}개")
         for it in msg["items"]:
-            print(f"      {it['tray']:<7} {it['dong']}동 {it['ho']}호 [{it['size']}]")
+            print(f"      {it['tray']:<7} {it['building_name']} {it['unit']} (dong={it['dong']}, ho={it['ho']})")
         threading.Thread(target=deliver, args=(msg,), daemon=True).start()
 
     def deliver(msg: dict):
-        for it in sorted(msg["items"], key=lambda i: (i["dong"], i["ho"])):
-            publish_state(status="배송 중", location=f"{it['dong']}동 {it['ho']}호",
+        for it in msg["items"]:                   # 트레이 순서 = 방문 순서
+            publish_state(status="배송 중", location=f"{it['building_name']} {it['unit']}",
                           battery=max(20, state["battery"] - 1))
             time.sleep(args.per_item)
             failed = random.random() < args.fail_rate
@@ -80,7 +82,7 @@ def main():
                      "receipt_no": it["receipt_no"],
                      "result": "FAILED" if failed else "DELIVERED",
                      "reason": "부재" if failed else None})
-            print(f"[FMS] {it['dong']}동 {it['ho']}호 {'배달 실패' if failed else '배달 완료'}")
+            print(f"[FMS] {it['building_name']} {it['unit']} {'배달 실패' if failed else '배달 완료'}")
         publish_state(status="대기 중", location="공동 보관소", available=True)
         publish({"type": "JOB_DONE", "job_id": msg["job_id"], "robot_id": args.robot})
         print(f"[FMS] {msg['job_id']} 완료, 로봇 복귀")

@@ -1,29 +1,35 @@
-// 입력 키오스크 (택배기사): 배송 주소 → 택배 정보 → 접수 확인 → 투입 안내(최소 정보)
+// 입력 키오스크 (택배기사): 배송 주소 → 보관 구분 → 접수 확인 → 투입 안내(최소 정보)
+// 건물·호실은 관리자 초기 설정(locker/config/site)을 그대로 쓴다.
 import { useEffect, useRef, useState } from "react";
 import {
-  DONGS, SIZES, TOPICS, TRACKING_RE, kioskId, sizeLabel, validateHo, type SizeKey,
+  TOPICS, TRACKING_RE, checkUnit, keyLeadsToUnit, kioskId, limitText, unitLabel,
 } from "../../shared/config";
-import { useLocker, useNow, useTodayCount } from "../../shared/hooks";
-import { IconArrowDown, IconBuilding, IconCheck, IconInfo, IconPackage, sizeIcon } from "../../shared/icons";
+import { useLocker, useNow, useSite, useTodayCount } from "../../shared/hooks";
 import {
-  Brand, Card, ConnectionBadge, Eyebrow, InfoNote, OptionCard, PrimaryButton, SecondaryButton,
-  SectionLabel, Stepper, Title,
+  IconArrowDown, IconBuilding, IconCheck, IconDoor, IconFragile, IconInfo, IconOversize, IconPackage,
+} from "../../shared/icons";
+import {
+  Brand, Card, ConnectionBadge, Eyebrow, InfoNote, Keypad, OptionCard, PrimaryButton, SecondaryButton,
+  SectionLabel, SiteGate, Stepper, Title, applyKey,
 } from "../../shared/ui";
 
 type Step = 1 | 2 | 3 | 4;
+type Area = "GRID" | "OVERSIZE";
 type InsertState = "waiting" | "confirming" | "done" | "cancelled";
-type Receipt = { no: string; port: SizeKey; deadline: number; total: number };
+type Receipt = { no: string; area: Area; door: number | null; message: string; deadline: number; total: number };
 
-const STEPS = ["배송 주소", "택배 정보", "접수 확인"];
+const STEPS = ["배송 주소", "보관 구분", "접수 확인"];
 const NEXT_ITEM_DELAY_MS = 3000;
+const pad2 = (n: number | null) => String(n ?? 0).padStart(2, "0");
 
 export default function InputApp() {
   const kiosk = kioskId("INPUT-01");
   const { client, connected } = useLocker(kiosk);
   const [step, setStep] = useState<Step>(1);
-  const [dong, setDong] = useState<number | null>(null);
-  const [ho, setHo] = useState("");
-  const [size, setSize] = useState<SizeKey | null>(null);
+  const [building, setBuilding] = useState<number | null>(null);
+  const [unit, setUnit] = useState("");
+  const [area, setArea] = useState<Area | null>(null);
+  const [fragile, setFragile] = useState(false);
   const [tracking, setTracking] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,16 +38,29 @@ export default function InputApp() {
   const [cancelReason, setCancelReason] = useState("");
   const [todayCount, applyTodayCount] = useTodayCount(client, connected, kiosk);
   const [endOpen, setEndOpen] = useState(false);
-  const hoRef = useRef<HTMLInputElement>(null);
+  const unitRef = useRef<HTMLInputElement>(null);
   const receiptRef = useRef<string | null>(null);
   const now = useNow();
+  // 설정이 바뀌면 진행 중인 접수가 없을 때 새로 고친다
+  const { site, loaded } = useSite(client, step === 1 && unit === "" && !receipt);
+
+  const buildings = site?.buildings ?? [];
+  const current = buildings.find((b) => b.code === building) ?? null;
+  const single = buildings.length === 1;
+  const unitCheck = checkUnit(current, site?.unit_term ?? "호", unit);
+  const trackingError = tracking && !TRACKING_RE.test(tracking) ? "송장번호는 영문·숫자 6~40자리입니다." : null;
+  const canNext1 = current !== null && unitCheck.state === "ok";
+  const canNext2 = area !== null && !trackingError;
+  const remaining = receipt ? Math.max(0, Math.ceil((receipt.deadline - now) / 1000)) : 0;
+  const locked = area === "OVERSIZE" || fragile;
 
   receiptRef.current = receipt?.no ?? null;
-  const hoError = ho ? validateHo(ho) : null;
-  const trackingError = tracking && !TRACKING_RE.test(tracking) ? "송장번호는 영문·숫자 6~40자리입니다." : null;
-  const canNext1 = dong !== null && ho !== "" && !hoError;
-  const canNext2 = size !== null && !trackingError;
-  const remaining = receipt ? Math.max(0, Math.ceil((receipt.deadline - now) / 1000)) : 0;
+
+  // 건물이 하나뿐이면 고르는 단계를 건너뛴다
+  useEffect(() => {
+    if (single && building !== buildings[0].code) setBuilding(buildings[0].code);
+    if (building !== null && !buildings.some((b) => b.code === building)) setBuilding(null);
+  }, [site]);
 
   // 서버가 투입 시간 초과로 접수를 취소하면 알림을 받는다
   useEffect(() => {
@@ -68,13 +87,14 @@ export default function InputApp() {
   }, [insert]);
 
   useEffect(() => {
-    if (step === 1) hoRef.current?.focus();
-  }, [step]);
+    if (step === 1 && current) unitRef.current?.focus();
+  }, [step, current]);
 
   function nextItem() {
-    // 같은 동에 연속 배송하는 경우가 많으므로 동은 유지
-    setHo("");
-    setSize(null);
+    // 같은 건물에 연속 배송하는 경우가 많으므로 건물은 유지
+    setUnit("");
+    setArea(null);
+    setFragile(false);
     setTracking("");
     setReceipt(null);
     setInsert("waiting");
@@ -84,7 +104,7 @@ export default function InputApp() {
 
   function resetAll() {
     nextItem();
-    setDong(null);
+    if (!single) setBuilding(null);
   }
 
   function retry() {
@@ -94,17 +114,23 @@ export default function InputApp() {
     setStep(3);
   }
 
+  function chooseBuilding(code: number) {
+    if (code !== building) setUnit("");
+    setBuilding(code);
+  }
+
   async function submit() {
-    if (!client || !size || dong === null) return;
+    if (!client || !area || building === null) return;
     setBusy(true);
     setError(null);
     try {
       const res = await client.request(TOPICS.register, {
-        dong, ho: Number(ho), size, tracking_no: tracking || null, kiosk_id: kiosk,
+        building, unit: Number(unit), area, fragile, tracking_no: tracking || null, kiosk_id: kiosk,
       });
       if (res.status === "OK") {
         const total = Number(res.timeout_sec) || 60;
-        setReceipt({ no: res.receipt_no, port: res.input_port, deadline: Date.now() + total * 1000, total });
+        setReceipt({ no: res.receipt_no, area: res.storage_area, door: res.door ?? null, message: res.message,
+                     deadline: Date.now() + total * 1000, total });
         setInsert("waiting");
         setStep(4);
       } else {
@@ -123,7 +149,7 @@ export default function InputApp() {
     setError(null);
     try {
       const res = await client.request(TOPICS.portConfirm, {
-        receipt_no: receipt.no, port: receipt.port, source: "KIOSK",
+        receipt_no: receipt.no, port: receipt.area, source: "KIOSK",
       });
       if (res.status === "OK") {
         setInsert("done");
@@ -140,6 +166,9 @@ export default function InputApp() {
       setError((e as Error).message);
     }
   }
+
+  const unitTerm = site?.unit_term ?? "호";
+  const buildingTerm = site?.building_term ?? "동";
 
   return (
     <div className="kiosk">
@@ -160,60 +189,97 @@ export default function InputApp() {
       </header>
 
       <main className="main">
-        {step === 1 && (
+        {!site && <SiteGate loaded={loaded} connected={connected} />}
+
+        {site && step === 1 && (
           <Card>
-            <Eyebrow>Parcel Intake</Eyebrow>
+            <Eyebrow>Parcel Intake · {site.name}</Eyebrow>
             <Title text="어디로 보내시나요" mark="?" />
-            <p className="subtitle">택배가 배송될 동과 호수를 선택해 주세요.</p>
+            <p className="subtitle">
+              {single ? `${current?.name ?? ""} ${unitTerm} 번호를 입력해 주세요.`
+                      : `배송될 ${buildingTerm}을(를) 고르고 ${unitTerm} 번호를 입력해 주세요.`}
+            </p>
 
-            <SectionLabel title="아파트 동 선택" required hint={`총 ${DONGS.length}개 동`} />
-            <div className="grid-3">
-              {DONGS.map((d) => (
-                <OptionCard key={d} selected={dong === d} onClick={() => setDong(d)}>
-                  <span className="option-icon"><IconBuilding /></span>
-                  <span className="option-title">{d}동</span>
-                </OptionCard>
-              ))}
-            </div>
+            {!single && (
+              <>
+                <SectionLabel title={`${buildingTerm} 선택`} required hint={`총 ${buildings.length}개`} />
+                <div className="grid-3">
+                  {buildings.map((b) => (
+                    <OptionCard key={b.code} selected={building === b.code} onClick={() => chooseBuilding(b.code)}>
+                      <span className="option-icon"><IconBuilding /></span>
+                      <span className="option-title">{b.name}</span>
+                    </OptionCard>
+                  ))}
+                </div>
+              </>
+            )}
 
-            <SectionLabel title="호수 입력" required hint="숫자만 입력" />
-            <label className={`field ${hoError ? "invalid" : ""}`}>
-              <input
-                ref={hoRef} inputMode="numeric" placeholder="예: 412" value={ho} maxLength={4}
-                onChange={(e) => setHo(e.target.value.replace(/\D/g, ""))}
-                onKeyDown={(e) => {
-                  // 상태 대신 입력창 값으로 판단 (입력 직후 Enter 가 와도 안전)
-                  const value = e.currentTarget.value;
-                  if (e.key === "Enter" && dong !== null && value && !validateHo(value)) setStep(2);
-                }}
-              />
-              <span className="field-suffix">호</span>
-            </label>
-            {hoError
-              ? <p className="field-error">{hoError}</p>
-              : <p className="field-help">동·호수가 정확하지 않으면 택배가 잘못 분류될 수 있습니다. (101호 ~ 412호)</p>}
+            {current && (
+              <>
+                <SectionLabel title={`${unitTerm} 입력`} required hint="숫자만 입력" />
+                <div className="unit-guide"><IconInfo size={18} /><span><b>{current.name}</b> · {current.guide}</span></div>
+                <div className="unit-grid">
+                  <div>
+                    <label className={`field ${unitCheck.state === "error" ? "invalid" : ""}`}>
+                      <input
+                        ref={unitRef} inputMode="numeric" placeholder={`예: ${current.units[0]}`} value={unit}
+                        maxLength={4}
+                        onChange={(e) => setUnit(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                        onKeyDown={(e) => {
+                          // 상태 대신 입력창 값으로 판단 (입력 직후 Enter 가 와도 안전)
+                          const value = e.currentTarget.value;
+                          if (e.key === "Enter" && checkUnit(current, unitTerm, value).state === "ok") setStep(2);
+                        }}
+                      />
+                      <span className="field-suffix">{unitTerm}</span>
+                    </label>
+                    {unitCheck.state === "error"
+                      ? <p className="field-error">{unitCheck.message}</p>
+                      : <p className="field-help">
+                          {unitCheck.state === "ok" ? `${unitLabel(site, building, unit)} 로 접수합니다.`
+                            : unitCheck.message ?? "없는 호실로만 이어지는 숫자 키는 눌리지 않습니다."}
+                        </p>}
+                  </div>
+                  <Keypad onKey={(k) => setUnit((v) => applyKey(v, k, 4))}
+                          enabled={(d) => keyLeadsToUnit(current.units, unit, d)} />
+                </div>
+              </>
+            )}
 
             <InfoNote>수취인 이름·전화번호는 수집하지 않습니다.</InfoNote>
           </Card>
         )}
 
-        {step === 2 && (
+        {site && step === 2 && (
           <Card>
             <Eyebrow>Parcel Intake</Eyebrow>
-            <Title text="택배 정보를 알려주세요" mark="." />
-            <p className="subtitle">보관 위치를 정하는 데 사용할 크기와 송장번호를 입력합니다.</p>
+            <Title text="어디에 보관할까요" mark="?" />
+            <p className="subtitle">입력구 틀에 들어가지 않으면 규격 초과를 선택하세요.</p>
 
-            <SectionLabel title="택배 크기" required hint="해당하는 크기를 선택" />
-            <div className="grid-3">
-              {SIZES.map((s) => (
-                <OptionCard key={s.key} selected={size === s.key} onClick={() => setSize(s.key)}>
-                  <span className="option-icon">{sizeIcon(s.key)}</span>
-                  <span className="option-key">{s.key}</span>
-                  <span className="option-title">{s.label}</span>
-                  <span className="option-desc">{s.desc} · {s.limit}</span>
-                </OptionCard>
-              ))}
+            <SectionLabel title="보관 구분" required hint={`틀 크기 ${limitText(site)}`} />
+            <div className="grid-2">
+              <OptionCard selected={area === "GRID"} onClick={() => setArea("GRID")}>
+                <span className="option-icon"><IconPackage size={32} /></span>
+                <span className="option-title">일반</span>
+                <span className="option-desc">입력구 틀에 들어가는 택배 · 보관함 1칸</span>
+              </OptionCard>
+              <OptionCard selected={area === "OVERSIZE"} onClick={() => setArea("OVERSIZE")}>
+                <span className="option-icon"><IconOversize /></span>
+                <span className="option-title">규격 초과</span>
+                <span className="option-desc">{limitText(site)} 초과 · 배송 불가 보관함</span>
+              </OptionCard>
             </div>
+
+            <SectionLabel title="취급 주의" optional hint="깨지기 쉬운 물품" />
+            <button type="button" className={`toggle-row ${fragile ? "on" : ""}`} onClick={() => setFragile((v) => !v)}
+                    aria-pressed={fragile}>
+              <span className="option-icon"><IconFragile /></span>
+              <span className="toggle-text">
+                <b>취급 주의 물품입니다</b>
+                <small>로봇 배송 없이 직접 수령으로만 보관됩니다.</small>
+              </span>
+              <span className="switch"><span /></span>
+            </button>
 
             <SectionLabel title="송장번호" optional hint="바코드 스캐너 입력 가능" />
             <label className={`field ${trackingError ? "invalid" : ""}`}>
@@ -223,7 +289,7 @@ export default function InputApp() {
                 onKeyDown={(e) => {
                   // 바코드 스캐너는 글자 입력 직후 Enter 를 보내므로 입력창 값으로 판단
                   const value = e.currentTarget.value.trim();
-                  if (e.key !== "Enter" || !size || (value && !TRACKING_RE.test(value))) return;
+                  if (e.key !== "Enter" || !area || (value && !TRACKING_RE.test(value))) return;
                   setTracking(value);
                   setStep(3);
                 }}
@@ -235,11 +301,11 @@ export default function InputApp() {
           </Card>
         )}
 
-        {step === 3 && dong !== null && size && (
+        {site && step === 3 && area && (
           <Card>
             <Eyebrow>Parcel Intake</Eyebrow>
             <Title text="마지막으로 확인해 주세요" mark="." />
-            <p className="subtitle">접수 후 화면에 표시되는 입력구에 택배를 넣어 주세요.</p>
+            <p className="subtitle">접수하면 보관함이 올라오거나 배송 불가 보관함 문이 열립니다.</p>
 
             <div className="summary">
               <div className="summary-head">
@@ -251,44 +317,67 @@ export default function InputApp() {
                 <span className="badge">입력 완료</span>
               </div>
               <dl>
-                <div className="summary-row"><dt>배송 목적지</dt><dd>{dong}동 {ho}호</dd></div>
-                <div className="summary-row"><dt>택배 크기</dt><dd>{size} · {sizeLabel(size)}</dd></div>
+                <div className="summary-row"><dt>배송 목적지</dt><dd>{unitLabel(site, building, unit)}</dd></div>
+                <div className="summary-row">
+                  <dt>보관 구분</dt><dd>{area === "GRID" ? "일반 · 그리드 보관함" : "규격 초과 · 배송 불가 보관함"}</dd>
+                </div>
+                <div className="summary-row"><dt>취급 주의</dt><dd className={fragile ? "" : "empty"}>{fragile ? "예" : "아니요"}</dd></div>
                 <div className="summary-row">
                   <dt>송장번호</dt>
                   <dd className={tracking ? "" : "empty"}>{tracking || "미입력"}</dd>
                 </div>
               </dl>
             </div>
+            {locked && <div className="alert alert-warn">취급 주의·규격 초과 물품은 로봇 배송 없이 직접 수령으로 보관됩니다.</div>}
             {!connected && <div className="alert alert-warn">서버에 연결되어 있지 않습니다. 연결되면 접수할 수 있습니다.</div>}
             {error && <div className="alert alert-error">{error}</div>}
           </Card>
         )}
 
-        {step === 4 && receipt && (
+        {site && step === 4 && receipt && (
           <Card className="insert">
             {(insert === "waiting" || insert === "confirming") && (
               <>
-                <h1 className="insert-port"><em>{receipt.port}</em> 입력구에 넣어주세요</h1>
-                <p className="receipt-small">접수번호 <b>{receipt.no}</b></p>
-                <div className="ports">
-                  {SIZES.map((s) => (
-                    <div key={s.key} className={`port ${s.key === receipt.port ? "target" : ""}`}>
-                      {s.key === receipt.port && <span className="port-arrow"><IconArrowDown /></span>}
-                      {s.key}
-                      <small>{s.label}</small>
+                {receipt.area === "GRID" ? (
+                  <>
+                    <h1 className="insert-port">입력구에 올라온 <em>보관함</em>에 넣어주세요</h1>
+                    <p className="receipt-small">접수번호 <b>{receipt.no}</b></p>
+                    <div className="ports">
+                      <div className="port port-wide target">
+                        <span className="port-arrow"><IconArrowDown /></span>
+                        <IconPackage size={40} />
+                        <small>그리드 입력구</small>
+                      </div>
                     </div>
-                  ))}
-                </div>
+                  </>
+                ) : (
+                  <>
+                    <h1 className="insert-port">배송 불가 보관함 <em>{pad2(receipt.door)}번</em> 문이 열렸습니다</h1>
+                    <p className="receipt-small">물품을 넣고 문을 닫아 주세요 · 접수번호 <b>{receipt.no}</b></p>
+                    <div className="ports doors">
+                      {doorWindow(receipt.door ?? 1, site.oversize_doors).map((d) => (
+                        <div key={d} className={`port door ${d === receipt.door ? "target" : ""}`}>
+                          {d === receipt.door && <span className="port-arrow"><IconArrowDown /></span>}
+                          <IconDoor />
+                          {pad2(d)}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
                 <div className="countdown">
                   <div className="countdown-track">
                     <div className={`countdown-fill ${remaining <= 15 ? "low" : ""}`}
                          style={{ width: `${(remaining / receipt.total) * 100}%` }} />
                   </div>
-                  <div className="countdown-text">넣은 뒤 [투입 완료]를 눌러 주세요 · 남은 시간 {remaining}초</div>
+                  <div className="countdown-text">
+                    {receipt.area === "GRID" ? "넣은 뒤 [투입 완료]를 눌러 주세요" : "문을 닫은 뒤 [보관 완료]를 눌러 주세요"}
+                    {" "}· 남은 시간 {remaining}초
+                  </div>
                 </div>
                 <div className="center-actions">
                   <PrimaryButton onClick={confirmInsert} disabled={insert === "confirming" || !connected}>
-                    {insert === "confirming" ? "확인 중…" : "투입 완료"}
+                    {insert === "confirming" ? "확인 중…" : receipt.area === "GRID" ? "투입 완료" : "보관 완료"}
                   </PrimaryButton>
                 </div>
                 {error && <div className="alert alert-error">{error}</div>}
@@ -325,14 +414,14 @@ export default function InputApp() {
       <footer className="bottombar">
         <span className="bottombar-note"><IconInfo size={16} /> LastGate 보관소 입력 키오스크 · {client?.clientId ?? "연결 준비 중"}</span>
         <div className="bottombar-actions">
-          {step === 1 && <PrimaryButton onClick={() => setStep(2)} disabled={!canNext1}>다음</PrimaryButton>}
-          {step === 2 && (
+          {site && step === 1 && <PrimaryButton onClick={() => setStep(2)} disabled={!canNext1}>다음</PrimaryButton>}
+          {site && step === 2 && (
             <>
               <SecondaryButton back onClick={() => setStep(1)}>이전</SecondaryButton>
               <PrimaryButton onClick={() => setStep(3)} disabled={!canNext2}>다음</PrimaryButton>
             </>
           )}
-          {step === 3 && (
+          {site && step === 3 && (
             <>
               <SecondaryButton back onClick={() => setStep(2)}>이전</SecondaryButton>
               <PrimaryButton onClick={submit} disabled={busy || !connected}>
@@ -362,4 +451,11 @@ export default function InputApp() {
       )}
     </div>
   );
+}
+
+/** 열린 문 주변 문 번호 최대 5개 (안내 그림용) */
+function doorWindow(door: number, total: number) {
+  const count = Math.min(5, Math.max(total, door));
+  const start = Math.max(1, Math.min(door - 2, Math.max(total, door) - count + 1));
+  return Array.from({ length: count }, (_, i) => start + i);
 }

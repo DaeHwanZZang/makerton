@@ -1,7 +1,11 @@
-// 서버의 server/config.py 와 같은 값을 유지한다.
+// 토픽·형식은 서버의 server/config.py 와 같은 값을 유지한다.
+// 건물·호실 같은 현장 설정은 여기 두지 않고 서버가 발행하는 locker/config/site(retained)를 쓴다.
 
 export const BROKER_URL: string =
   import.meta.env.VITE_BROKER_URL ?? `ws://${window.location.hostname || "localhost"}:9001`;
+
+/** 시작 화면의 관리자 웹 링크. 관리자 웹은 보관소 PC(127.0.0.1)에서만 열린다. */
+export const ADMIN_URL: string = import.meta.env.VITE_ADMIN_URL ?? "http://localhost:4190";
 
 export const TOPICS = {
   register: "locker/input/register",
@@ -12,39 +16,69 @@ export const TOPICS = {
   parcels: "locker/output/parcels",
   retrieve: "locker/output/retrieve",
   summary: "locker/state/summary",
+  site: "locker/config/site",
+  serverOnline: "locker/server/online",
   clientRes: (clientId: string) => `locker/client/${clientId}/res`,
   clientOnline: (clientId: string) => `locker/client/${clientId}/online`,
 };
 
-export const DONGS = [101, 102, 103, 104, 105, 106];
-export const FLOORS = 4;
-export const UNITS_PER_FLOOR = 12;
+export type Building = {
+  code: number;
+  name: string;
+  unit_from: number;
+  unit_to: number;
+  missing: string;
+  extra: string;
+  guide: string;        // 서버가 만든 입력 전 안내 (예: "101~614호 · 없는 호실: 404호, 5층 전체")
+  units: number[];
+};
 
-export type SizeKey = "S" | "M" | "L";
+export type Site = {
+  name: string;
+  building_term: string;
+  unit_term: string;
+  buildings: Building[];
+  grid_limit_mm: number[];
+  grid_bins: number;
+  oversize_doors: number;
+  robots: number;
+  service_start: string;
+  service_end: string;
+  version: number;
+};
 
-export const SIZES: { key: SizeKey; label: string; desc: string; limit: string }[] = [
-  { key: "S", label: "소형", desc: "문서, 작은 소포", limit: "5kg 이하" },
-  { key: "M", label: "중형", desc: "일반 택배 상자", limit: "10kg 이하" },
-  { key: "L", label: "대형", desc: "부피가 큰 상자", limit: "20kg 이하" },
-];
-
-export const sizeLabel = (key: string) => SIZES.find((s) => s.key === key)?.label ?? key;
+export type SiteMessage = { type: "SITE_CONFIG"; initialized: boolean; version: number; site: Site | null };
 
 export const TRACKING_RE = /^[A-Za-z0-9]{6,40}$/;
 
 export const IDLE_LOGOUT_SEC = 60;
 
-/** 호수 검증. 통과하면 null, 아니면 안내 문구 */
-export function validateHo(value: string): string | null {
-  if (!/^\d{3,4}$/.test(value)) return "호수는 숫자 3~4자리로 입력하세요.";
-  const ho = Number(value);
-  const floor = Math.floor(ho / 100);
-  const unit = ho % 100;
-  if (floor < 1 || floor > FLOORS || unit < 1 || unit > UNITS_PER_FLOOR) {
-    return `101호 ~ ${FLOORS}${String(UNITS_PER_FLOOR).padStart(2, "0")}호 범위로 입력하세요 (층 1~${FLOORS}, 호 01~${UNITS_PER_FLOOR}).`;
-  }
-  return null;
+/** 600×400×220mm 같은 규격 문구 */
+export const limitText = (site: Site | null) => (site?.grid_limit_mm ?? [600, 400, 220]).join("×") + "mm";
+
+/** prefix 뒤에 digit 을 눌렀을 때 이어질 수 있는 호실이 있는지 (없는 호실로만 가는 키는 끈다) */
+export function keyLeadsToUnit(units: number[], prefix: string, digit: string): boolean {
+  const next = prefix + digit;
+  if (next === "0") return false;
+  return units.some((u) => String(u).startsWith(next));
 }
+
+/** 입력값 검사. ok=완성된 호실, partial=더 입력해야 함, 그 외 오류 문구 */
+export function checkUnit(building: Building | null, unitTerm: string, value: string):
+  { state: "empty" | "ok" | "partial" | "error"; message?: string } {
+  if (!value) return { state: "empty" };
+  if (!building) return { state: "error", message: "먼저 건물을 선택하세요." };
+  if (building.units.includes(Number(value))) return { state: "ok" };
+  if (building.units.some((u) => String(u).startsWith(value))) {
+    return { state: "partial", message: `${unitTerm} 번호를 끝까지 입력하세요.` };
+  }
+  return { state: "error", message: `${building.name}에 ${value}${unitTerm}는 없습니다.` };
+}
+
+export const unitLabel = (site: Site | null, building: number | null | undefined, unit: number | string) => {
+  const b = site?.buildings.find((x) => x.code === building);
+  return `${b?.name ?? building ?? ""} ${unit}${site?.unit_term ?? ""}`.trim();
+};
 
 /** URL 의 ?id= 로 키오스크 번호를 바꿀 수 있다 (예: /input?id=INPUT-02) */
 export function kioskId(fallback: string): string {
