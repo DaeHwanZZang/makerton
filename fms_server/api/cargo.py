@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from fms_server.cargo import CargoError, CargoNotFound
+from fms_server.sites import SiteNotFound
 
 router = APIRouter(tags=['cargo'])
 
@@ -56,6 +57,23 @@ def resolve_parcel(site_id: str, parcel_id: str, body: ResolveRequest, request: 
             raise HTTPException(404, str(exc)) from None
         except CargoError as exc:
             raise HTTPException(422, str(exc)) from None
+
+
+class ClearFloorRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    map_id: Optional[str] = Field(default=None, max_length=128)   # 없으면 현장 전체 층
+
+
+@router.post('/api/v1/sites/{site_id}/parcels/clear-floor')
+def clear_floor(site_id: str, body: ClearFloorRequest, request: Request):
+    """배송 완료 물품의 바닥 하차 표시를 맵에서 지운다. 물품 기록·상태는 그대로 둔다."""
+    try:
+        request.app.state.sites.get_site(site_id)
+    except SiteNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    with request.app.state.job_coordinator.lock:
+        cleared = request.app.state.cargo.clear_floor(site_id, body.map_id or None)
+    return {'cleared': cleared, 'count': len(cleared)}
 
 
 @router.get('/api/v1/sites/{site_id}/delivery-bundles')

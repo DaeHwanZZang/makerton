@@ -67,6 +67,7 @@ TOPIC_ADMIN_UNLOCK = "locker/admin/accounts/unlock"
 TOPIC_ADMIN_STORAGE = "locker/admin/storage"
 TOPIC_ADMIN_CODE_PICKUP = "locker/admin/code_pickup"
 TOPIC_ADMIN_EVENTS = "locker/admin/events"
+TOPIC_ADMIN_DEMO_SKIP = "locker/admin/demo/skip_wait"   # 시연 전용 (DEMO_MODE 일 때만)
 # 서버 → 클라이언트 전용 응답·알림
 TOPIC_CLIENT_RES = "locker/client/{client_id}/res"
 TOPIC_CLIENT_ONLINE = "locker/client/{client_id}/online"
@@ -131,6 +132,11 @@ SLOT_LEAD_SEC = 20 * 60             # 지금부터 이 시간 뒤의 칸부터 �
 DISPATCH_LEAD_SEC = 15 * 60         # 예약 칸 시작 15분 전에 배송 발행
 SLOT_HORIZON_SEC = 24 * 3600
 SLOT_PROTECT_SEC = 30 * 60          # 이 시간 안에 출발할 예약이 있으면 마지막 로봇에 자동 배송을 맡기지 않음
+
+# --- 대회 시연 ---------------------------------------------------------------
+# 켜면 관리자 웹 '대기 건너뛰기'로 예약 가능 시간(30분)·예약 칸 발행 대기(칸 시작 15분 전)를 바로 끝낼 수 있다.
+# 운영에서는 끈다. 2개가 모여야 출발하는 규칙과 로봇 대수 제한은 시연 중에도 그대로다.
+DEMO_MODE = os.getenv("LASTGATE_DEMO", "0").strip().lower() in ("1", "true", "yes", "on")
 
 # --- 시간 ----------------------------------------------------------------
 PORT_TIMEOUT_SEC = 60                        # 접수 후 투입 대기

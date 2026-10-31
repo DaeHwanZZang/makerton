@@ -294,7 +294,7 @@ FMS  → JOB_REJECTED        로봇 배정 전 운영자 취소 (세대 목적�
 
 ## 8. 관리자 (`admin_web`)
 
-관리자 웹 서버(Node BFF, `127.0.0.1:4190`)만 보냅니다. `client_id` 가 `ADMIN-WEB-` 으로 시작하지 않으면 `DENIED`.
+관리자 웹 서버(Node BFF, `127.0.0.1:4191`)만 보냅니다. `client_id` 가 `ADMIN-WEB-` 으로 시작하지 않으면 `DENIED`.
 로그인·로그아웃 외에는 모두 `session`(관리자 토큰, 30분 무활동 만료)이 필요하고, 응답 `type` 은 `ADMIN_…_RESPONSE` 입니다.
 
 | 토픽 | 요청 필드 | 응답 (OK) |
@@ -311,9 +311,10 @@ FMS  → JOB_REJECTED        로봇 배정 전 운영자 취소 (세대 목적�
 | `locker/admin/accounts/reset_password` | `user_id` | `revoked` (비밀번호 1234, must_change) |
 | `locker/admin/accounts/change_occupant` | `user_id` | `revoked` (1234 · 기본 ROBOT · 이전 기록 숨김) |
 | `locker/admin/accounts/unlock` | `user_id` | — |
-| `locker/admin/storage` | — | `occupancy`, `waiting`, `active_jobs`, `items[]` |
+| `locker/admin/storage` | — | `occupancy`, `waiting`, `active_jobs`, `items[]`, `demo`(시연 모드 여부) |
 | `locker/admin/code_pickup` | `code`(6자리), `confirm` | `confirmed`, `item{label, storage_area, space_id, door, …}` |
 | `locker/admin/events` | `limit`(≤500), `all` | `events[]` (기본 `ADMIN_*` 작업 기록만) |
+| `locker/admin/demo/skip_wait` | — | 시연 전용 (`LASTGATE_DEMO=1`, 아니면 `DISABLED`). `CHOICE_OPEN` → 지금 `AUTO`, `RESERVED` → 지금 발행 대상(`RUSH`) 후 배송 발행 검사. `auto[]`, `rushed[]`, `jobs[]`, `waiting[{receipt_no,label}]`, `robots_busy`, `summary` |
 
 ```jsonc
 // site (init · update · preview 공통)

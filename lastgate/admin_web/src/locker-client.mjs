@@ -20,7 +20,8 @@ export const TOPICS = {
   unlock: 'locker/admin/accounts/unlock',
   storage: 'locker/admin/storage',
   codePickup: 'locker/admin/code_pickup',
-  events: 'locker/admin/events'
+  events: 'locker/admin/events',
+  demoSkip: 'locker/admin/demo/skip_wait'
 };
 
 export function createLockerClient({ url, connect = mqtt.connect, ...options } = {}) {

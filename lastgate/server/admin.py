@@ -14,7 +14,7 @@ from datetime import datetime
 import config
 from auth import hash_password, verify_password
 from common import RequestError, locked_for, log, to_int
-from models import ACTIVE_STATUSES, Area
+from models import ACTIVE_STATUSES, Area, Mode, Plan, Status
 from site_config import Site, SiteError
 from storage import space_index
 
@@ -38,6 +38,7 @@ class AdminMixin:
         config.TOPIC_ADMIN_STORAGE: ("_admin_storage", "ADMIN_STORAGE_RESPONSE"),
         config.TOPIC_ADMIN_CODE_PICKUP: ("_admin_code_pickup", "ADMIN_CODE_PICKUP_RESPONSE"),
         config.TOPIC_ADMIN_EVENTS: ("_admin_events", "ADMIN_EVENTS_RESPONSE"),
+        config.TOPIC_ADMIN_DEMO_SKIP: ("_admin_demo_skip", "ADMIN_DEMO_SKIP_RESPONSE"),
     }
 
     # --- 계정·세션 -------------------------------------------------------
@@ -121,7 +122,7 @@ class AdminMixin:
                 "defaults": config.SITE_DEFAULTS,
                 "accounts": self.store.account_stats(),
                 "active_items": len(self.store.items(ACTIVE_STATUSES)),
-                "occupancy": self.summary()["occupancy"]}
+                "occupancy": self.summary()["occupancy"], "demo": config.DEMO_MODE}
 
     def _candidate(self, p: dict) -> Site:
         try:
@@ -323,7 +324,7 @@ class AdminMixin:
                           "registered_at": it.registered_at, "tracking_no": it.tracking_no})
         summary = self.summary()
         return {"status": "OK", "occupancy": summary["occupancy"], "waiting": summary["waiting"],
-                "active_jobs": summary["active_jobs"], "items": items}
+                "active_jobs": summary["active_jobs"], "items": items, "demo": config.DEMO_MODE}
 
     def _admin_code_pickup(self, p: dict, client_id: str) -> dict:
         s = self._admin(p, client_id)
@@ -353,3 +354,42 @@ class AdminMixin:
         limit = min(500, max(1, to_int(p.get("limit")) or 100))
         prefix = None if p.get("all") else "ADMIN_"
         return {"status": "OK", "events": self.store.events(limit, prefix)}
+
+    # --- 대회 시연 -------------------------------------------------------
+    def _admin_demo_skip(self, p: dict, client_id: str) -> dict:
+        """시연 전용: 로봇 배송 대기 시간을 바로 끝낸다 (LASTGATE_DEMO=1 일 때만).
+
+        - 배송 시간 예약 가능 시간(CHOICE_OPEN, 보관 후 30분) → 지금 자동 배송 확정
+        - 예약(RESERVED) → 칸 시작 15분 전까지 기다리지 않고 지금 발행 대상 (물품에 RUSH 표시)
+        그 뒤 배송 발행을 바로 검사한다. 2개가 모여야 출발하는 규칙과 로봇 대수 제한은 그대로다.
+        """
+        s = self._admin(p, client_id)
+        if not config.DEMO_MODE:
+            raise RequestError("DISABLED", "시연 기능이 꺼져 있습니다. 보관소 서버를 LASTGATE_DEMO=1 로 실행하세요.")
+        site = self._site()
+        now = self.now()
+        auto, rushed = [], []
+        for it in self.store.items([Status.STORED], mode=Mode.ROBOT.value, unassigned=True):
+            if it.direct_lock:
+                continue
+            if it.plan == Plan.CHOICE_OPEN:
+                self._make_auto(it, now)
+                auto.append(it.receipt_no)
+            elif it.plan == Plan.RESERVED and not it.has_note("RUSH"):
+                it.add_note("RUSH")
+                self._save(it)
+                rushed.append(it.receipt_no)
+        before = {j["job_id"] for j in self.store.active_jobs()}
+        self._issue_jobs()
+        jobs = [j["job_id"] for j in self.store.active_jobs() if j["job_id"] not in before]
+        left = [it for it in self.store.items([Status.STORED], mode=Mode.ROBOT.value, unassigned=True)
+                if not it.direct_lock and it.plan in (Plan.AUTO, Plan.RESERVED)]
+        busy = len(self.store.active_jobs()) >= site.robots
+        parts = [f"자동 배송 확정 {len(auto)}개", f"예약 즉시 발행 {len(rushed)}개", f"새 배송 {len(jobs)}건"]
+        if left:
+            parts.append(f"대기 {len(left)}개 (" + ("로봇이 모두 배송 중" if busy else "2개가 모여야 출발") + ")")
+        self._admin_log("ADMIN_DEMO_SKIP", s["user_id"], {"auto": auto, "rushed": rushed, "jobs": jobs})
+        log("시연", " · ".join(parts))
+        return {"status": "OK", "auto": auto, "rushed": rushed, "jobs": jobs,
+                "waiting": [{"receipt_no": it.receipt_no, "label": site.label(it.building, it.unit)} for it in left],
+                "robots_busy": busy, "summary": " · ".join(parts)}

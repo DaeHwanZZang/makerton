@@ -6,6 +6,7 @@
     "공통 값: {python}(런처 인터프리터) {repo}(리포 루트) {host} {port} {map}(fms_map.json 절대경로, 맵 없음이면 빈 문자열)",
     "cwd: 리포 루트 기준 상대경로. requires: [\"broker\"]. needs_map: 맵 필수. needs_build: 없으면 make 를 권하는 바이너리.",
     "stop_timeout_s: SIGTERM 후 기다리는 시간. 넘으면 강제 종료할지 묻는다.",
+    "listens: 브로커 항목 전용(브로커 포트). 런처가 이 키가 있는 항목을 브로커로 다룬다. 웹 서버 포트에는 쓰지 않는다.",
     "env: {이름: 값} 환경변수. 값도 {키} 치환한다 (설정을 환경변수로만 받는 툴용, 예: fms_server).",
     "params: type = str / int / float / bool / choice(choices), group 이 바뀌면 폼에 구분 제목이 들어간다.",
     "multi: id_param(이름으로 쓸 키), id_fmt(자동 이름), step({키: 대수마다 더할 값})"
@@ -148,9 +149,10 @@
       "cmd": ["make"],
       "stop_timeout_s": 10
     },
-    {"id": "locker", "name": "LastGate 보관소 서버", "mode": "single", "cmd": ["{python}", "server.py"], "cwd": "lastgate/server", "requires": ["broker"], "env": {"LOCKER_BROKER_HOST": "{host}", "LOCKER_BROKER_PORT": "{port}"}, "stop_timeout_s": 5},
+    {"id": "locker", "name": "LastGate 보관소 서버", "mode": "single", "cmd": ["{python}", "server.py"], "cwd": "lastgate/server", "requires": ["broker"], "env": {"LOCKER_BROKER_HOST": "{host}", "LOCKER_BROKER_PORT": "{port}", "LASTGATE_DEMO": "{demo}"}, "stop_timeout_s": 5,
+      "params": [{"key": "demo", "label": "시연 모드 (관리자 웹 '대기 건너뛰기' 허용, 운영에서는 끔)", "type": "bool", "default": true}]},
     {"id": "locker_kiosk", "name": "LastGate 웹 키오스크", "mode": "single", "cmd": ["npm", "run", "dev"], "cwd": "lastgate/web", "requires": ["broker"], "env": {"VITE_BROKER_URL": "ws://{host}:9001"}, "stop_timeout_s": 5},
     {"id": "locker_resident", "name": "LastGate 세대 웹", "mode": "single", "cmd": ["node", "server.mjs"], "cwd": "lastgate/end_user_wep", "requires": ["broker"], "env": {"LOCKER_BROKER_HOST": "{host}", "LOCKER_BROKER_PORT": "{port}"}, "stop_timeout_s": 5},
-    {"id": "locker_admin", "name": "LastGate 관리자 웹", "mode": "single", "cmd": ["node", "server.mjs"], "cwd": "lastgate/admin_web", "requires": ["broker"], "env": {"LOCKER_BROKER_HOST": "{host}", "LOCKER_BROKER_PORT": "{port}"}, "listens": 4190, "stop_timeout_s": 5}
+    {"id": "locker_admin", "name": "LastGate 관리자 웹", "mode": "single", "cmd": ["node", "server.mjs"], "cwd": "lastgate/admin_web", "requires": ["broker"], "env": {"LOCKER_BROKER_HOST": "{host}", "LOCKER_BROKER_PORT": "{port}"}, "stop_timeout_s": 5}
   ]
 }

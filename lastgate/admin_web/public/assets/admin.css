@@ -123,3 +123,7 @@ label.check { display: flex !important; align-items: center; gap: 8px; font-weig
   .building-row { grid-template-columns: 1fr 1fr; }
   .building-row .wide { grid-column: auto; }
 }
+
+/* 대회 시연 전용 */
+.demo-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 12px; padding: 12px 16px; border: 1px dashed var(--danger); border-radius: 12px; background: #fff7f6; }
+.demo-bar small { display: block; color: var(--muted); margin-top: 2px; }

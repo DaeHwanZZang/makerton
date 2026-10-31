@@ -24,12 +24,12 @@ npm ci
 npm start
 ```
 
-`http://127.0.0.1:4190/` 에서 `admin` / `admin1234` 로 로그인합니다.
+`http://127.0.0.1:4191/` 에서 `admin` / `admin1234` 로 로그인합니다.
 보관소 서버를 처음 실행할 때 `LASTGATE_ADMIN_PASSWORD` 가 있으면 그 값이 관리자 비밀번호가 됩니다. 기본 비밀번호인 동안은 바꾸라는 안내가 나옵니다.
 
 | 변수 | 기본값 | 의미 |
 |---|---|---|
-| `PORT` | `4190` | |
+| `PORT` | `4191` | |
 | `HOST` | `127.0.0.1` | 보관소 PC에서만 엽니다. 다른 값을 쓰면 시작할 때 경고합니다 |
 | `LOCKER_BROKER_HOST` / `LOCKER_BROKER_PORT` / `LOCKER_BROKER_URL` | `localhost` / `1883` | 보관소 서버와 같은 브로커 |
 | `LOCKER_BROKER_USER` / `LOCKER_BROKER_PASS` | — | 브로커 계정 (운영 시) |
@@ -66,12 +66,13 @@ npm start
 | `GET /api/admin/storage` | — | `locker/admin/storage` |
 | `POST /api/admin/code-pickup` | `{ code, confirm }` (`confirm: false` 면 조회만) | `locker/admin/code_pickup` |
 | `GET /api/admin/events?all=1&limit=100` | — | `locker/admin/events` |
+| `POST /api/admin/demo/skip-wait` | — | `locker/admin/demo/skip_wait` (시연 전용. 보관소 서버가 `LASTGATE_DEMO=1` 이 아니면 403 `DISABLED`) |
 
 | HTTP | 보관소 status |
 |---|---|
 | 400 | `INVALID` |
 | 401 | `AUTH_REQUIRED`, `EXPIRED_SESSION`, 로그인 `DENIED` |
-| 403 | `DENIED` |
+| 403 | `DENIED`, `DISABLED` |
 | 404 | `NOT_FOUND` |
 | 409 | `ALREADY_INITIALIZED`, `NOT_INITIALIZED`, `BLOCKED`(+`blocked`), `MISMATCH`, `ALREADY_LOADED` |
 | 423 | `LOCKED`(+`retry_after_sec`) |

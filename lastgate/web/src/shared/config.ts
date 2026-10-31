@@ -5,7 +5,7 @@ export const BROKER_URL: string =
   import.meta.env.VITE_BROKER_URL ?? `ws://${window.location.hostname || "localhost"}:9001`;
 
 /** 시작 화면의 관리자 웹 링크. 관리자 웹은 보관소 PC(127.0.0.1)에서만 열린다. */
-export const ADMIN_URL: string = import.meta.env.VITE_ADMIN_URL ?? "http://localhost:4190";
+export const ADMIN_URL: string = import.meta.env.VITE_ADMIN_URL ?? "http://localhost:4191";
 
 export const TOPICS = {
   register: "locker/input/register",

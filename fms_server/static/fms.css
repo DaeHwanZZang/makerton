@@ -673,3 +673,5 @@ tr.delivery-child td:first-child { padding-left:34px; }
 .elev-live-state[data-tone=open] {background:#223e37;color:#92d7bd;}
 .elev-live-state[data-tone=unknown] {background:#3a3225;color:#e4c188;}
 .elevator-live tr[data-fresh=false] .elev-live-floor {color:#9eafc2;}
+
+.layer-options .layer-action { margin-left: auto; padding: 1px 8px; font-size: 12px; border-radius: 6px; }

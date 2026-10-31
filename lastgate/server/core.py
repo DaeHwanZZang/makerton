@@ -536,7 +536,7 @@ class LockerCore(AdminMixin):
             self._release_seat(item)
             self.store.take_seat(key, free.pop(0), item, now.isoformat())
             item.plan, item.slot_start, item.auto_at = Plan.RESERVED.value, key, None
-            item.notified = ",".join(n for n in item.notified.split(",") if n and n != "DELAY")
+            item.notified = ",".join(n for n in item.notified.split(",") if n and n not in ("DELAY", "RUSH"))
             self._save(item)
         self._slots_changed.add(key)
         log("예약", f"{site.label(*household)} {rsv.label(start)} ← {', '.join(receipts)}")
@@ -795,9 +795,9 @@ class LockerCore(AdminMixin):
         for key in starts:
             if free <= 0:
                 break
-            if now < rsv.dispatch_at(datetime.fromisoformat(key)):
-                continue
             items = [it for it in reserved if it.slot_start == key and it.receipt_no not in used]
+            if not any(self._due(it, now) for it in items):
+                continue
             if not items:
                 continue
             bundle = build_slot_bundle(items, self._fillers(now, exclude=used | {it.receipt_no for it in items}),
@@ -837,10 +837,16 @@ class LockerCore(AdminMixin):
         for it in self.store.items([Status.STORED], mode=Mode.ROBOT.value, unassigned=True):
             if it.receipt_no in exclude or it.direct_lock:
                 continue
-            if it.plan == Plan.AUTO or (it.plan == Plan.RESERVED and it.slot_start
-                                        and now >= rsv.dispatch_at(datetime.fromisoformat(it.slot_start))):
+            if it.plan == Plan.AUTO or (it.plan == Plan.RESERVED and self._due(it, now)):
                 out.append(it)
         return out
+
+    @staticmethod
+    def _due(item: Item, now: datetime) -> bool:
+        """예약 물품의 발행 시각(칸 시작 15분 전)이 됐는지. 시연 '대기 건너뛰기'(RUSH)면 바로."""
+        if item.has_note("RUSH"):
+            return True
+        return bool(item.slot_start) and now >= rsv.dispatch_at(datetime.fromisoformat(item.slot_start))
 
     def _cancel_if_empty(self, job_id: str):
         """도착 전 Job 의 물품이 모두 빠지면 바로 취소를 보낸다."""

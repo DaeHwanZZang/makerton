@@ -10,6 +10,7 @@ function fakeLocker() {
   const sessions = new Set();
   let connected = true;
   let initialized = false;
+  let demo = false;
   async function request(topic, body) {
     if (!connected) throw new LockerUnavailableError('보관소 서버에 연결되어 있지 않습니다.');
     calls.push({ topic, body });
@@ -41,13 +42,17 @@ function fakeLocker() {
         return { status: 'OK', confirmed: body.confirm, item: { receipt_no: 'R1', label: '가천관 101호실' } };
       case TOPICS.events:
         return { status: 'OK', events: [], all: body.all, limit: body.limit };
+      case TOPICS.demoSkip:
+        return demo ? { status: 'OK', auto: ['R1'], rushed: [], jobs: ['J1'], waiting: [], summary: '새 배송 1건' }
+          : { status: 'DISABLED', message: '시연 기능이 꺼져 있습니다.' };
       default:
         return { status: 'OK' };
     }
   }
   return {
     request, calls, site: () => null, serverOnline: () => true, isConnected: () => connected,
-    setConnected: value => { connected = value; }
+    setConnected: value => { connected = value; },
+    setDemo: value => { demo = value; }
   };
 }
 
@@ -111,6 +116,17 @@ test('account and code pickup routes pass ids and flags to the locker', async ()
   assert.equal((await pickup.json()).confirmed, true);
   const events = await (await fetch(`${base}/api/admin/events?all=1&limit=50`, withCookie(cookie))).json();
   assert.deepEqual([events.all, events.limit], [true, 50]);
+});
+
+test('demo skip-wait is refused unless the locker server runs in demo mode', async () => {
+  const cookie = await login();
+  const off = await fetch(`${base}/api/admin/demo/skip-wait`, withCookie(cookie, json({})));
+  assert.equal(off.status, 403);
+  assert.equal((await off.json()).error.code, 'DISABLED');
+  locker.setDemo(true);
+  const on = await fetch(`${base}/api/admin/demo/skip-wait`, withCookie(cookie, json({})));
+  assert.deepEqual((await on.json()).jobs, ['J1']);
+  assert.equal(locker.calls.at(-1).topic, TOPICS.demoSkip);
 });
 
 test('requests from other hosts and origins are refused', async () => {

@@ -1,7 +1,7 @@
 import { createLockerClient } from './src/locker-client.mjs';
 import { createServer } from './src/api-server.mjs';
 
-const port = Number(process.env.PORT || 4190);
+const port = Number(process.env.PORT || 4191);
 const host = process.env.HOST || '127.0.0.1';
 const brokerUrl = process.env.LOCKER_BROKER_URL ||
   `mqtt://${process.env.LOCKER_BROKER_HOST || 'localhost'}:${process.env.LOCKER_BROKER_PORT || 1883}`;
@@ -23,8 +23,8 @@ server.on('error', error => {
   } else {
     console.error('\n서버를 시작하지 못했습니다:', error.message);
   }
-  locker.close();
-  process.exitCode = 1;
+  // MQTT 재연결이 프로세스를 붙잡지 않게 연결을 닫고 바로 끝낸다.
+  Promise.resolve(locker.close()).finally(() => process.exit(1));
 });
 
 server.listen(port, host, () => {

@@ -367,8 +367,22 @@ async function loadStorage() {
       ['로봇 배송 대기', waiting.ROBOT], ['직접 수령 대기', waiting.DIRECT],
       ['진행 중 배송', jobs.length, jobs.map(j => `${j.job_id} ${j.status}`).join(', ') || '없음']
     ]);
+    el('demo-bar').hidden = !state.storage.demo;
     renderStorageTable();
   } catch (error) { if (error.status !== 401) toast(error.message); }
+}
+
+// 대회 시연 전용: 대기 시간 건너뛰기 (보관소 서버 LASTGATE_DEMO=1)
+async function demoSkip() {
+  const button = el('demo-skip');
+  button.disabled = true;
+  try {
+    const res = await post('/api/admin/demo/skip-wait');
+    showAlert('demo-alert', res.summary, res.jobs.length ? 'ok' : 'error');
+    await loadStorage();
+  } catch (error) {
+    if (error.status !== 401) showAlert('demo-alert', error.message);
+  } finally { button.disabled = false; }
 }
 
 function renderStorageTable() {
@@ -529,6 +543,7 @@ el('action-form').addEventListener('submit', event => { event.preventDefault(); 
 el('code-form').addEventListener('submit', event => { event.preventDefault(); lookupCode(event.currentTarget); });
 el('events-all').addEventListener('change', loadEvents);
 ['storage-area', 'storage-mode', 'storage-q'].forEach(id => el(id).addEventListener('input', renderStorageTable));
+el('demo-skip').addEventListener('click', demoSkip);
 el('reset-form').addEventListener('submit', event => { event.preventDefault(); submitReset(event.currentTarget); });
 el('admin-password-form').addEventListener('submit', event => { event.preventDefault(); submitAdminPassword(event.currentTarget); });
 

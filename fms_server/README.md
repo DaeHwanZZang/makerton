@@ -114,6 +114,8 @@ X/Y는 회전 전 좌상단 좌표다. 양의 각도는 지도에서 시계 방�
   근거는 로봇이 보고한 PICK/DROP의 RUNNING/FINISHED다. FINISHED 없이 끝나면 `unknown`이며 운영자가 실물을 확인해 정정한다.
   시뮬레이터의 시간 기반 액션 완료이며 적재 센서로 확인한 값이 아니다.
 - 두 PICK이 모두 FINISHED여야 출발한다. DROP은 물품마다 따로 하며 FINISHED 뒤에만 그 물품을 해당 작업 위치의 바닥 물품으로 맵에 표시한다.
+  맵 왼쪽 아래 **표시 항목 → 하차 물품 [정리]** 는 모든 층의 바닥 표시를 지운다(`POST /api/v1/sites/{site_id}/parcels/clear-floor`, `{map_id}`를 주면 그 층만).
+  물품 상태(`delivered`)·하차 위치·이력은 남고 `floor_cleared_at`만 기록한다. 같은 물품이 다시 배송 완료되면 다시 표시된다.
 - 배송 후 반납 지점에서 칸마다 반납 DROP(`payload_id=TRAY_RETURN:{bundle_id}:{TRAY_A|TRAY_B}`)을 한다. 칸별 FINISHED가 되면
   그 칸은 비고, 트레이째 돌아온 미배송 물품은 `returned`다. 두 칸이 모두 비면 묶음이 닫힌다.
 - 칸 상태: `none`(트레이 없음) · `reserved` · `loading`/`loaded` · `unloading`/`empty_tray`(빈 트레이) · `returning` · `unknown`.

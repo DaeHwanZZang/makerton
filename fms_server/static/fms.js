@@ -639,7 +639,7 @@ function draw() {
   if(view.layers.parcels){
     const spots=new Map();
     for(const parcel of app.cargo?.parcels||[]){
-      const d=parcel.status==='delivered'?parcel.drop_position:null;
+      const d=parcel.status==='delivered'&&!parcel.floor_cleared_at?parcel.drop_position:null;
       if(!d||d.map_id!==app.map)continue;
       const key=`${d.x.toFixed(2)},${d.y.toFixed(2)}`;
       if(!spots.has(key))spots.set(key,{pose:d,parcels:[]});
@@ -933,6 +933,15 @@ async function pollCargo() {
   }finally{cargoBusy=false;}
 }
 setInterval(()=>run(pollCargo),1500);
+// 배송 완료 물품의 바닥 하차 표시 정리 (기록은 남는다). 시연 전·세대가 가져간 뒤.
+document.getElementById('clearFloor').onclick=()=>run(async()=>{
+  if(!app.site)return;
+  const shown=(app.cargo?.parcels||[]).filter(p=>p.status==='delivered'&&p.drop_position&&!p.floor_cleared_at).length;
+  if(!shown){notify('지울 하차 물품 표시가 없습니다.');return;}
+  if(!confirm(`모든 층의 하차 물품 표시 ${shown}개를 지울까요? 배송 기록은 남습니다.`))return;
+  const res=await request(`${siteURL()}/parcels/clear-floor`,'POST',{});
+  await pollCargo();draw();notify(`하차 물품 표시 ${res.count}개를 지웠습니다.`);
+});
 setInterval(()=>{
   if(!app.site||siteBusy)return;siteBusy=true;run(async()=>{
     try{

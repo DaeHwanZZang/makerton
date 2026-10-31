@@ -290,6 +290,7 @@ class CargoStore:
         elif to == "delivered":
             parcel["onboard_robot_id"] = None
             parcel["drop_position"] = location
+            parcel.pop("floor_cleared_at", None)
             parcel["last_confirmed_location"] = {"kind": "floor", **(location or {})}
         elif to == "returned":
             parcel["onboard_robot_id"] = None
@@ -445,6 +446,31 @@ class CargoStore:
             bundle["updated_at"] = _now()
             self._save()
 
+    # -- 바닥 표시 정리 ----------------------------------------------------
+
+    def clear_floor(self, site_id: str, map_id: Optional[str] = None) -> list[str]:
+        """배송 완료 물품의 바닥 하차 표시를 맵에서 지운다 (세대가 가져간 뒤·시연 전 정리).
+
+        물품 상태(delivered)·하차 위치·이력은 그대로 두고 floor_cleared_at 만 기록한다.
+        map_id 를 주면 그 맵(층)만, 없으면 현장 전체. 정리한 parcel_id 목록을 돌려준다.
+        """
+        with self._lock:
+            now = _now()
+            cleared = []
+            for parcel in self._data["parcels"].values():
+                position = parcel.get("drop_position") or {}
+                if (parcel["site_id"] != site_id or parcel["status"] != "delivered" or not position
+                        or parcel.get("floor_cleared_at") or (map_id and position.get("map_id") != map_id)):
+                    continue
+                parcel["floor_cleared_at"] = now
+                parcel["history"].append({"at": now, "from": "delivered", "to": "delivered",
+                                          "reason": "바닥 하차 표시 정리"})
+                cleared.append(parcel["parcel_id"])
+            if cleared:
+                self._save()
+                log.info("바닥 하차 표시 정리 %s%s: %d개", site_id, f"/{map_id}" if map_id else "", len(cleared))
+            return cleared
+
     # -- 운영자 확정 -------------------------------------------------------
 
     def resolve(self, parcel_id: str, result: str, reason: str) -> dict:
@@ -479,6 +505,7 @@ class CargoStore:
                             "target": parcel.get("drop_target")}
                 parcel["drop_position"] = position
                 parcel["last_confirmed_location"] = {"kind": "floor", **position}
+                parcel.pop("floor_cleared_at", None)
             elif to in ("returned", "canceled"):
                 parcel["onboard_robot_id"] = None
                 parcel["last_confirmed_location"] = {"kind": "station" if to == "returned" else "locker",

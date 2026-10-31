@@ -597,6 +597,50 @@ class RobotTests(Base):
         self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM items").fetchone()[0], 1)
 
 
+class DemoTests(Base):
+    """대회 시연 전용 '대기 건너뛰기' (LASTGATE_DEMO=1)."""
+
+    def setUp(self):
+        super().setUp()
+        self._demo = T.DEMO_MODE
+        T.DEMO_MODE = True
+        self.addCleanup(setattr, T, "DEMO_MODE", self._demo)
+
+    def skip(self):
+        return self.req(T.TOPIC_ADMIN_DEMO_SKIP, client=ADMIN, session=self.admin)
+
+    def test_disabled_outside_demo(self):
+        T.DEMO_MODE = False
+        self.store_item()
+        self.assertEqual(self.skip()["status"], "DISABLED")
+        self.assertFalse(self.req(T.TOPIC_ADMIN_STORAGE, client=ADMIN, session=self.admin)["demo"])
+
+    def test_skip_choice_window_and_reservation_dispatches_now(self):
+        web = self.login(building=1, unit=101, client=RESIDENT, channel="RESIDENT")
+        a = self.store_item(building=1, unit=101)
+        b = self.store_item(building=2, unit=101)
+        slot = "2026-10-31T15:00:00+09:00"                    # 지금 14:00 → 원래 14:45 발행
+        self.assertEqual(self.req(T.TOPIC_RESERVE, client=RESIDENT, session=web, slot_start=slot,
+                                  receipt_nos=[a])["status"], "OK")
+        self.assertEqual(self.jobs(), [])
+        res = self.skip()
+        self.assertEqual((res["status"], res["auto"], res["rushed"]), ("OK", [b], [a]))
+        self.assertEqual(len(res["jobs"]), 1)
+        job = self.jobs()[-1]
+        self.assertEqual([i["receipt_no"] for i in job["items"]], [a, b])   # 예약 세대 먼저
+        self.assertEqual(job["summary"]["kind"], "RESERVED")
+        self.assertIn("새 배송 1건", res["summary"])
+        self.assertTrue(self.req(T.TOPIC_ADMIN_STORAGE, client=ADMIN, session=self.admin)["demo"])
+
+    def test_single_item_still_waits_for_pair(self):
+        a = self.store_item()
+        res = self.skip()
+        self.assertEqual((res["auto"], res["jobs"]), ([a], []))
+        self.assertEqual([w["receipt_no"] for w in res["waiting"]], [a])
+        self.assertIn("2개가 모여야 출발", res["summary"])
+        self.assertEqual(self.jobs(), [])
+
+
 class AdminTests(Base):
     def test_update_adds_and_blocks(self):
         token = self.admin

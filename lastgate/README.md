@@ -8,7 +8,7 @@ v4.0부터는 동·호가 고정되어 있지 않습니다. 관리자가 처음 
 | `server/` | Python·SQLite 보관소 서버. 현장 설정, 계정, 접수, 보관함 배정, 수령 방식, 배송 예약, 배송 묶음, 알림 |
 | `web/` | React·TypeScript 웹 키오스크. `/input`(기사 입력), `/output`(직접 수령) |
 | `end_user_wep/` | 세대 웹. 입주민 화면과 Node.js HTTP→MQTT 중계(BFF). 원본 폴더 이름을 유지합니다 → [세대 웹 안내](end_user_wep/README.md) |
-| `admin_web/` | 관리자 웹. 보관소 PC 전용(`127.0.0.1:4190`) → [관리자 웹 안내](admin_web/README.md) |
+| `admin_web/` | 관리자 웹. 보관소 PC 전용(`127.0.0.1:4191`) → [관리자 웹 안내](admin_web/README.md) |
 | `shared/` | 세대 웹·관리자 웹이 함께 쓰는 MQTT 요청·응답 클라이언트(`locker-client.mjs`) |
 | [`protocol.md`](protocol.md) | LastGate MQTT 메시지 명세 (v4.0) |
 | [`../fms_server/locker.py`](../fms_server/locker.py) | FMS 배송 연동·로봇 예약·복귀 (LastGate v4.0과 맞지 않는 부분은 아래 [FMS 연동](#fms-연동-현재-맞지-않는-부분)) |
@@ -70,7 +70,7 @@ npm start
 | `http://localhost:4173/input` | 기사 입력 키오스크 |
 | `http://localhost:4173/output` | 직접 수령 키오스크 |
 | `http://localhost:4180/` | 세대 웹 |
-| `http://127.0.0.1:4190/` | 관리자 웹 (보관소 PC에서만) |
+| `http://127.0.0.1:4191/` | 관리자 웹 (보관소 PC에서만) |
 
 DB는 `lastgate/server/data/locker.db` 에 저장됩니다. 서버는 사용자 DB를 자동으로 지우지 않습니다.
 v3 DB(동·호 고정, 크기 S/M/L)가 있으면 첫 실행 때 v4로 변환합니다(`server/migrate.py`).
@@ -78,7 +78,7 @@ v3 DB(동·호 고정, 크기 S/M/L)가 있으면 첫 실행 때 v4로 변환합
 
 ## 처음 설정
 
-1. 보관소 서버와 관리자 웹을 켜고 `http://127.0.0.1:4190/` 에서 `admin` / `admin1234` 로 로그인합니다.
+1. 보관소 서버와 관리자 웹을 켜고 `http://127.0.0.1:4191/` 에서 `admin` / `admin1234` 로 로그인합니다.
    서버를 처음 실행할 때 `LASTGATE_ADMIN_PASSWORD` 환경변수가 있으면 그 값이 관리자 비밀번호가 됩니다. 로그인한 뒤 바로 바꿉니다.
 2. **초기 설정**에 아래 항목을 넣습니다. 미리보기에서 만들어질 계정 수와 호실 안내를 확인하고 저장합니다.
    - 사이트 이름과 용어(예: 동/호, 건물/호실)
@@ -127,6 +127,22 @@ v3 DB(동·호 고정, 크기 S/M/L)가 있으면 첫 실행 때 v4로 변환합
 
 배송 묶음 형식, 알림 종류, 오류 코드는 [protocol.md](protocol.md)에 있습니다.
 
+### 대회 시연: 대기 건너뛰기
+
+발표 중에는 예약 가능 시간(30분)이나 예약 칸 발행 시각(칸 시작 15분 전)을 기다릴 수 없으므로 시연 전용 기능을 둡니다.
+
+1. 보관소 서버를 `LASTGATE_DEMO=1` 로 실행합니다. 런처는 보관소 서버의 **시연 모드** 옵션이 기본으로 켜져 있습니다.
+   **`lastgate/server/`** 에서 직접 실행할 때는 `LASTGATE_DEMO=1 ../../.venv/bin/python server.py` 입니다.
+2. 택배 2개를 접수하고, 세대 웹에서 가장 이른 시간으로 예약하거나 그대로 둡니다.
+3. 관리자 웹 **보관 현황**의 **대기 건너뛰기**를 누릅니다. 시연 모드가 아니면 이 영역이 보이지 않습니다.
+   - 예약 가능 시간 중인 물품은 지금 자동 배송으로 확정합니다.
+   - 예약한 물품은 칸 시작 15분 전까지 기다리지 않고 지금 발행합니다.
+   - 바로 배송 발행을 검사해 결과(새 배송 건수, 남은 대기 물품과 이유)를 보여 줍니다.
+
+**`lastgate/server/`** 에서 `../../.venv/bin/python -m tools.demo_skip` 으로도 같은 일을 합니다.
+2개가 모여야 출발하는 규칙과 로봇 대수 제한은 시연 중에도 그대로입니다. 1개뿐이면 짝을 기다리고, 로봇이 배송 중이면 끝난 뒤 발행합니다.
+운영에서는 `LASTGATE_DEMO` 를 켜지 않습니다.
+
 ## 실제 로봇 연결 순서
 
 1. FMS에서 현장·맵·승강기 연결을 준비하고 로봇을 등록합니다.
@@ -168,10 +184,11 @@ FMS 없이 배송 흐름만 시험할 때는 **`lastgate/server/`** 의 FMS 대�
 | `LOCKER_BROKER_USER`, `LOCKER_BROKER_PASS` | 보관소 서버·세대 웹·관리자 웹 | 브로커 계정 (운영 시. [protocol.md 11장](protocol.md#11-운영-시-mqtt-접근-제어-권장)) |
 | `LOCKER_DB_PATH` | 보관소 서버 | DB 위치 |
 | `LASTGATE_ADMIN_PASSWORD` | 보관소 서버 | 처음 만들 관리자 비밀번호 |
-| `PORT`, `HOST` | 세대 웹(4180)·관리자 웹(4190, 127.0.0.1) | 웹 서버 주소 |
+| `LASTGATE_DEMO` | 보관소 서버 | `1` 이면 시연 전용 '대기 건너뛰기' 허용 (기본 꺼짐) |
+| `PORT`, `HOST` | 세대 웹(4180)·관리자 웹(4191, 127.0.0.1) | 웹 서버 주소 |
 | `RESIDENT_WEB_ID` | 세대 웹 | 세대 웹 서버 MQTT client_id 의 고정 부분 (서버를 여러 대 둘 때 서로 다르게) |
 | `VITE_BROKER_URL` | 웹 키오스크 | 브로커 WebSocket 주소 (기본 `ws://<접속 호스트>:9001`) |
-| `VITE_ADMIN_URL` | 웹 키오스크 | 런처 화면의 관리자 웹 링크 (기본 `http://localhost:4190`) |
+| `VITE_ADMIN_URL` | 웹 키오스크 | 런처 화면의 관리자 웹 링크 (기본 `http://localhost:4191`) |
 | `FMS_MQTT_HOST`, `FMS_MQTT_PORT`, `FMS_DATA_ROOT` | FMS | |
 
 외부 단말을 연결할 때는 브로커 바인딩과 접근 정책도 따로 설정해야 합니다. 시연 환경은 익명 접속입니다.

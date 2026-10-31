@@ -22,7 +22,8 @@ const LOGIN_WINDOW_MS = 5 * 60 * 1000;
 // 보관소 서버 응답 상태 → HTTP 상태
 const STATUS_HTTP = {
   OK: 200, INVALID: 400, DENIED: 403, EXPIRED_SESSION: 401, NOT_FOUND: 404, LOCKED: 423,
-  ALREADY_INITIALIZED: 409, NOT_INITIALIZED: 409, BLOCKED: 409, MISMATCH: 409, ALREADY_LOADED: 409
+  ALREADY_INITIALIZED: 409, NOT_INITIALIZED: 409, BLOCKED: 409, MISMATCH: 409, ALREADY_LOADED: 409,
+  DISABLED: 403
 };
 
 export class HttpError extends Error {
@@ -126,10 +127,12 @@ const ROUTES = [
   ['POST', '/api/admin/code-pickup', TOPICS.codePickup, ({ body }) => ({
     code: encodeId(body.code), confirm: body.confirm === true })],
   ['GET', '/api/admin/events', TOPICS.events, ({ url }) => ({
-    all: url.searchParams.get('all') === '1', limit: Number(url.searchParams.get('limit')) || 100 })]
+    all: url.searchParams.get('all') === '1', limit: Number(url.searchParams.get('limit')) || 100 })],
+  // 대회 시연 전용. 보관소 서버가 LASTGATE_DEMO=1 이 아니면 403 DISABLED.
+  ['POST', '/api/admin/demo/skip-wait', TOPICS.demoSkip, () => ({})]
 ];
 
-export function createServer({ locker, port = 4190, loginLimit = LOGIN_LIMIT, extraHosts = [] }) {
+export function createServer({ locker, port = 4191, loginLimit = LOGIN_LIMIT, extraHosts = [] }) {
   if (!locker) throw new Error('Locker client is required');
   const allowedHosts = new Set([...LOCAL_HOSTS, ...extraHosts]);
   const limitLogin = createRateLimiter(loginLimit, LOGIN_WINDOW_MS);

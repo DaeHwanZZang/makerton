@@ -760,3 +760,28 @@ def test_charger_with_blocked_approach_is_not_chosen(dock_env):
                                                                                is_free=lambda x, y: False)
     charger, note = bridge._choose_charger(d)
     assert charger is None and '진입 방향' in note and 'charger-near' in note
+
+
+def test_clear_floor_hides_drop_marks_but_keeps_records(dock_env):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from fms_server.api.cargo import router as cargo_router
+    bridge, coord = dock_env[:2]
+    d = deliver_to_return(dock_env)
+    cargo = bridge.cargo
+    delivered = [p for p in cargo.parcels('hq') if p['status'] == 'delivered']
+    assert len(delivered) == 2 and all(p['drop_position'] for p in delivered)
+    app = FastAPI()
+    app.include_router(cargo_router)
+    app.state.cargo, app.state.sites, app.state.job_coordinator = cargo, bridge.registry, coord
+    with TestClient(app) as client:
+        assert client.post('/api/v1/sites/ghost/parcels/clear-floor', json={}).status_code == 404
+        # 다른 맵(층)만 지우면 이 맵 표시는 그대로
+        assert client.post('/api/v1/sites/hq/parcels/clear-floor', json={'map_id': 'f3'}).json()['count'] == 0
+        res = client.post('/api/v1/sites/hq/parcels/clear-floor', json={}).json()
+        assert res['count'] == 2
+        assert client.post('/api/v1/sites/hq/parcels/clear-floor', json={}).json()['count'] == 0
+    for p in cargo.parcels('hq'):
+        assert p['status'] == 'delivered' and p['drop_position'] and p['floor_cleared_at']
+        assert p['history'][-1]['reason'] == '바닥 하차 표시 정리'
+    assert d['bundle_id']
