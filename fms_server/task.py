@@ -102,8 +102,10 @@ class ActionCommand:
         data = {"type": self.kind}
         if self.target is not None:
             data["target"] = self.target
-        if self.kind == "wait":
+        if self.kind in ("wait", "pickup", "drop"):
             data["duration"] = self.duration
+            if self.params:
+                data["params"] = dict(self.params)
         else:
             data["params"] = dict(self.params)
         return data
@@ -112,7 +114,7 @@ class ActionCommand:
 def _parse_command(entry: dict):
     kind = entry.get("type")
     target = entry.get("target")
-    if kind not in ("move", "wait", "docking", "parking"):
+    if kind not in ("move", "wait", "docking", "parking", "pickup", "drop"):
         raise JobError(f"알 수 없는 명령 type: {kind!r}")
     if kind != "wait" and (not isinstance(target, str) or not target.strip()):
         raise JobError(f"{kind} 명령에 target(location 이름)이 없다")
@@ -120,11 +122,18 @@ def _parse_command(entry: dict):
         raise JobError("target은 비어 있지 않은 목적지 이름이어야 한다")
     if kind == "move":
         return MoveCommand(target=target)
-    if kind == "wait":
+    if kind in ("wait", "pickup", "drop"):
         duration = entry.get("duration")
         if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
             raise JobError("대기 시간은 0보다 큰 유한한 초 단위 숫자여야 한다")
-        return ActionCommand(kind, target, duration=float(duration))
+        if kind == "wait":
+            return ActionCommand(kind, target, duration=float(duration))
+        params = entry.get("params", {})
+        if not isinstance(params, dict) or set(params) - {"payload_id"}:
+            raise JobError("적재·하차 params에는 payload_id만 지정할 수 있다")
+        if params and (not isinstance(params["payload_id"], str) or not params["payload_id"].strip()):
+            raise JobError("payload_id는 비어 있지 않은 문자열이어야 한다")
+        return ActionCommand(kind, target, duration=float(duration), params=dict(params))
     params = entry.get("params", {})
     if not isinstance(params, dict):
         raise JobError("도킹/주차 params는 객체여야 한다")
@@ -171,6 +180,7 @@ class Job:
 
     auto_assign: bool = False
     preset_name: Optional[str] = None
+    external_owner: Optional[str] = None  # 외부 배송이 여러 하위 작업 동안 로봇을 예약한다
     resolved_steps: list[dict] = field(default_factory=list)
     order_snapshot: Optional[dict] = None
 
@@ -198,6 +208,7 @@ class Job:
             "commands": [c.to_dict() for c in self.commands],
             "status": self.status.value,
             "auto_assign": self.auto_assign, "preset_name": self.preset_name,
+            "external_owner": self.external_owner,
             "resolved_steps": self.resolved_steps, "order_snapshot": self.order_snapshot,
             "plan": self.plan, "stage": self.stage, "stage_data": self.stage_data,
             "robot_id": self.robot_id,
@@ -219,6 +230,7 @@ class Job:
             commands=[_parse_command(e) for e in data.get("commands", [])],
             status=JobStatus(data.get("status", "pending")),
             auto_assign=data.get("auto_assign", False), preset_name=data.get("preset_name"),
+            external_owner=data.get("external_owner"),
             resolved_steps=data.get("resolved_steps", []), order_snapshot=data.get("order_snapshot"),
             plan=data.get("plan", []), stage=data.get("stage", 0), stage_data=data.get("stage_data", {}),
             robot_id=data.get("robot_id"),
@@ -292,7 +304,7 @@ class JobStore:
 
     def create(
         self, site_id: str, commands: list[dict], robot_id: Optional[str] = None,
-        *, auto_assign=False, preset_name=None, resolved_steps=None
+        *, auto_assign=False, preset_name=None, resolved_steps=None, external_owner=None
     ) -> Job:
         _check_seg(site_id, "site_id")
         if not commands:
@@ -306,6 +318,7 @@ class JobStore:
             job_id = f"{site_id}-J{n:04d}"
             job = Job(job_id=job_id, site_id=site_id, commands=parsed, robot_id=robot_id,
                       auto_assign=auto_assign, preset_name=preset_name,
+                      external_owner=external_owner,
                       resolved_steps=copy.deepcopy(resolved_steps or []))
             self._jobs[job_id] = job
             self._persist_site(site_id)
@@ -379,8 +392,10 @@ def compile_to_order(job: Job, registry: SiteRegistry) -> Order:
     for i, (command, step) in enumerate(zip(job.commands, resolved, strict=True)):
         action = None
         if isinstance(command, ActionCommand):
-            kind = {"wait": ActionType.WAIT, "docking": ActionType.DOCK, "parking": ActionType.PARK}[command.kind]
+            kind = {"wait": ActionType.WAIT, "docking": ActionType.DOCK, "parking": ActionType.PARK,
+                    "pickup": ActionType.PICK, "drop": ActionType.DROP}[command.kind]
             action = Action(action_id=f"{order_id}-a{i}", action_type=kind,
+                            payload_id=command.params.get("payload_id"),
                             duration=command.duration, params=command.params)
             if command.kind == "docking":
                 from fms_server.mapkit.chargers import require_charger
@@ -439,6 +454,27 @@ class JobCoordinator:
         self._site_coordinator = site_coordinator
         self._unsubscribe = None
         self._lock = threading.RLock()
+        self._reservations: dict[str, str] = {}
+
+    @property
+    def lock(self):
+        """외부 배송 전이도 배정과 같은 락에서 처리한다."""
+        return self._lock
+
+    @_serialized
+    def reserve_robot(self, robot_id: str, owner: str) -> None:
+        if self._reservations.get(robot_id, owner) != owner:
+            raise JobError(f"로봇 {robot_id}는 다른 배송이 예약했다")
+        if any(j.robot_id == robot_id and not j.status.terminal
+               and j.status != JobStatus.PENDING and j.external_owner != owner
+               for j in self._store.list()):
+            raise JobError(f"로봇 {robot_id}는 다른 작업을 수행 중이다")
+        self._reservations[robot_id] = owner
+
+    @_serialized
+    def release_robot(self, robot_id: str, owner: str) -> None:
+        if self._reservations.get(robot_id) == owner:
+            del self._reservations[robot_id]
 
     # -- 수명 주기 ----------------------------------------------------
 
@@ -464,6 +500,12 @@ class JobCoordinator:
         target_robot = robot_id or job.robot_id
         if not target_robot:
             raise JobError("배정할 로봇이 없다 (robot_id 를 줘라)")
+
+        owner = self._reservations.get(target_robot)
+        if owner is not None and owner != job.external_owner:
+            raise JobError(f"로봇 {target_robot}는 배송 {owner}가 예약 중이다")
+        if job.external_owner and owner != job.external_owner:
+            raise JobError("외부 배송 예약을 먼저 복원해야 한다")
 
         if any(j.robot_id == target_robot and j.status in (JobStatus.ASSIGNED, JobStatus.WORKING, JobStatus.CANCELING)
                for j in self._store.list()):
@@ -656,6 +698,11 @@ class JobCoordinator:
                 elif state.state == RobotState.ERROR:
                     self._fail_multi(job, "로봇이 ERROR 상태")
                 elif state.state in (RobotState.IDLE, RobotState.CHARGING):
+                    if job.external_owner and any(n["cmd"] is not None
+                            and n.get("action", {}).get("type") in ("pickup", "drop")
+                            and job.done_commands <= n["cmd"] for n in stage["nodes"] if n.get("action")):
+                        self._fail_multi(job, "적재·하차 FINISHED 보고 누락 — 확인 필요")
+                        return False
                     for n in stage["nodes"]:
                         if n["cmd"] is not None:
                             job.done_commands = max(job.done_commands, n["cmd"] + 1)
@@ -786,6 +833,7 @@ class JobCoordinator:
 
     def _stage_order(self, job: Job, stage: dict, oid: str) -> Order:
         kinds = {"wait": ActionType.WAIT, "docking": ActionType.DOCK, "parking": ActionType.PARK,
+                 "pickup": ActionType.PICK, "drop": ActionType.DROP,
                  "straight": ActionType.STRAIGHT}
         nodes = []
         for i, n in enumerate(stage["nodes"]):
@@ -793,6 +841,7 @@ class JobCoordinator:
             if n["action"]:
                 a = n["action"]
                 action = Action(action_id=f"{oid}-a{i}", action_type=kinds[a["type"]],
+                                payload_id=a.get("params", {}).get("payload_id"),
                                 duration=a.get("duration", 0.0), params=a.get("params", {}))
             nodes.append(OrderNode(node_id=f"{oid}-n{i}", sequence_id=i, released=True,
                                    position=Pose(x=n["x"], y=n["y"], theta=n["theta"]), action=action))
@@ -929,6 +978,11 @@ class JobCoordinator:
             elif state.state == RobotState.ERROR:
                 self._finish(job, JobStatus.FAILED, "로봇이 ERROR 상태")
             elif state.state in (RobotState.IDLE, RobotState.CHARGING):
+                if job.external_owner and any(isinstance(c, ActionCommand)
+                        and c.kind in ("pickup", "drop") and job.done_commands <= i
+                        for i, c in enumerate(job.commands)):
+                    self._finish(job, JobStatus.FAILED, "배송 단계 완료 보고 누락 — 적재·하차 확인 필요")
+                    return
                 job.done_commands = len(job.commands)
                 self._finish(job, JobStatus.SUCCESS, None)
 

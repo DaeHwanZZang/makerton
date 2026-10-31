@@ -19,3 +19,11 @@ __pycache__/
 # FMS 런타임 데이터 (site/맵 저장소)
 fms_server/maps/
 viewer/.map_cache/
+
+# LastGate 런타임 데이터·웹 빌드
+node_modules/
+node_modules.nosync/
+lastgate/server/data/
+lastgate/end_user_wep/data/
+lastgate/web/dist/
+lastgate/**/.env

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>보관소 배송 연동</title><link rel="stylesheet" href="/static/fms.css"><style>
+body{display:block;overflow:auto;background:var(--bg)}main{display:block;margin:0 auto;padding:32px;max-width:1150px;height:auto;overflow:visible}section{background:var(--panel);padding:24px;border:1px solid var(--line);border-radius:12px;margin:20px 0;overflow:auto}label{display:inline-flex;flex-direction:column;gap:6px;margin:8px 16px 8px 0}input,select,button{font:inherit;padding:8px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid var(--line)}#message{min-height:24px;color:var(--amber)}dialog{max-width:640px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:24px}dialog::backdrop{background:#0006}.receipt{display:flex;flex-direction:row;align-items:center}small{display:block;color:var(--muted)}a{color:var(--blue)}button{cursor:pointer}
+</style></head><body><main>
+<a href="/">← FMS 관제</a><h1>보관소 배송 연동</h1>
+<p>택배 접수는 키오스크에서, 로봇 운행은 FMS에서 관리합니다. 보관소 출발부터 복귀까지 같은 로봇을 예약합니다.</p>
+<p><a href="http://localhost:4173/input" target="_blank" rel="noopener">입력 키오스크</a> · <a href="http://localhost:4173/output" target="_blank" rel="noopener">출력 키오스크</a> · <a href="http://localhost:4180" target="_blank" rel="noopener">세대 웹</a></p>
+<p id="message" role="status"></p>
+<section><h2>현장과 목적지 연결</h2><form id="configForm">
+<label>현장<select id="site" required></select></label><label>픽업스테이션 (적재·트레이 반납)<select id="pickup" required></select></label>
+<label>적재 시간 (초)<input id="pickDuration" type="number" min="0.1" max="300" step="0.1" value="2" required></label>
+<label>세대별 하차 시간 (초)<input id="dropDuration" type="number" min="0.1" max="300" step="0.1" value="2" required></label>
+<p>배송은 물품 2개가 모이면 출발하며 두 트레이(TRAY_A·TRAY_B)에 하나씩 싣습니다. 시뮬레이터는 지정한 시간의 PICK·DROP 액션 완료를 적재·인도로 간주합니다. 픽업스테이션(맵의 ＋ → 픽업스테이션)과 각 세대의 목적지를 먼저 등록하세요.</p>
+<p id="legacyPickup" class="warn" hidden></p>
+<table><thead><tr><th>세대 (동-호)</th><th>FMS 목적지</th><th></th></tr></thead><tbody id="mappings"></tbody></table>
+<p><button type="button" id="addMapping">세대 연결 추가</button> <button type="submit" class="primary">연결 저장</button></p>
+</form></section>
+<section><h2>배송 현황</h2><p>오류가 발생한 배송은 로봇 예약을 유지합니다. 로봇을 점검하고 적재물을 대조한 뒤 복귀를 요청하세요. 진행 중인 작업의 취소는 FMS 작업 게시판에서 합니다.</p>
+<table><thead><tr><th>배송 / 하위 작업</th><th>로봇</th><th>진행</th><th>배송 묶음 · 트레이</th><th>확인 사항</th></tr></thead><tbody id="deliveries"></tbody></table></section>
+<section><h2>물품 장부</h2><p>FMS가 물품마다 부여한 ID와 현재 위치입니다. 상태는 로봇의 PICK·DROP 완료 보고로 확인한 값이며 실제 적재 센서 검출이 아닙니다. 확인 필요 물품은 실물을 확인한 뒤 정정하세요.</p>
+<table><thead><tr><th>물품 ID / 접수번호</th><th>세대</th><th>상태</th><th>로봇·트레이</th><th>마지막 확인 위치</th><th></th></tr></thead><tbody id="parcels"></tbody></table></section>
+<dialog id="returnDialog"><form id="returnForm"><h2>적재물 대조 후 복귀</h2><p>이미 인도한 물품만 선택하세요. 선택하지 않은 잔여 물품은 로봇에 남아 있으며 보관소 도착 후 재입고됩니다.</p><div id="receipts"></div><label class="receipt"><input id="confirmOnboard" type="checkbox" required>잔여 물품이 로봇에 있거나 보관소에 남아 있음을 확인했습니다.</label><p id="returnError" role="status"></p><button type="submit">복귀 요청</button> <button type="button" id="closeDialog">닫기</button></form></dialog>
+<script type="module" src="/static/locker.js"></script></main></body></html>

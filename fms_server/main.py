@@ -33,6 +33,9 @@ from fms_server.api.robots import router as robots_router
 from fms_server.api.sites import router as sites_router
 from fms_server.api.zones import router as zones_router
 from fms_server.api.map_points import router as map_points_router
+from fms_server.api.pickup_stations import router as pickup_stations_router
+from fms_server.api.cargo import router as cargo_router
+from fms_server.cargo import CargoStore
 from fms_server.config import settings
 from fms_server.elevator_ctl import ElevatorController
 from fms_server.elevator_sim import BuiltinElevatorSim
@@ -42,6 +45,8 @@ from fms_server.fleet import Fleet
 from fms_server.mqtt_client import FmsMqttClient
 from fms_server.sites import SiteRegistry
 from fms_server.task import JobCoordinator, JobStore
+from fms_server.locker import LockerBridge
+from fms_server.api.locker import router as locker_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +78,10 @@ async def lifespan(app: FastAPI):
                     if settings.elevator_sim else None)
 
     allocator = JobAllocator(job_coordinator)
+    cargo = CargoStore(settings.data_root)
+    app.state.cargo = cargo
+    locker = LockerBridge(registry, fleet, jobs, job_coordinator, mqtt, settings.data_root, cargo=cargo)
+    app.state.locker = locker
     app.state.presets = PresetStore(settings.data_root)
     app.state.allocator = allocator
 
@@ -95,10 +104,12 @@ async def lifespan(app: FastAPI):
     if elevator_sim is not None:
         elevator_sim.start()
     allocator.start()
+    locker.start()
     log.info("FMS 서버 시작 완료")
     try:
         yield
     finally:
+        locker.stop()
         allocator.stop()
         if elevator_sim is not None:
             elevator_sim.stop()
@@ -118,7 +129,10 @@ app.include_router(jobs_router)
 app.include_router(presets_router)
 app.include_router(zones_router)
 app.include_router(map_points_router)
+app.include_router(pickup_stations_router)
+app.include_router(cargo_router)
 app.include_router(elevators_router)
+app.include_router(locker_router)
 
 _ADMIN_HTML = Path(__file__).parent / "static" / "admin.html"
 app.mount("/static", StaticFiles(directory=_ADMIN_HTML.parent), name="static")

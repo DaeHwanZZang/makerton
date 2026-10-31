@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d2032">
+  <title>LastGate | 운영자 대시보드</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script type="module" src="/assets/admin.js"></script>
+</head>
+<body class="admin-page">
+  <div class="admin-shell">
+    <header class="admin-header">
+      <div class="admin-brand"><span class="small-brand-icon">◈</span><strong>LastGate</strong><span class="admin-brand-sub">운영자 콘솔</span></div>
+      <nav class="admin-nav"><a href="/">↗ 키오스크 열기</a><span class="demo-mark">LOCAL DEMO</span></nav>
+    </header>
+    <main class="admin-main">
+      <div class="admin-title-row"><div><div class="eyebrow"><span class="eyebrow-line"></span> OPERATIONS CENTER</div><h1>보관 · 배송 현황</h1><p>보관소에 등록된 택배와 배송 상태를 확인할 수 있습니다.</p></div><button id="refresh-btn" class="btn btn-secondary" hidden>↻ 새로고침</button></div>
+      <div id="admin-error" class="alert-banner" role="alert" hidden></div>
+      <section id="admin-login" class="login-card"><div class="login-lock">🔐</div><h2>운영자 인증</h2><p>공개 키오스크와 분리된 운영자 전용 조회 화면입니다.</p><form id="admin-login-form"><label for="admin-key">관리자 API 키</label><input type="password" autocomplete="off" id="admin-key" placeholder="관리자 키를 입력하세요" required><button class="btn btn-primary" type="submit">대시보드 접속 →</button></form><p class="login-hint">로컬 데모 기본 키: <code>local-demo-only</code><br>외부 배포 시 반드시 별도 인증 체계로 교체하세요.</p></section>
+      <section id="admin-dashboard" hidden>
+        <div id="stats-grid" class="stats-grid"></div>
+        <div class="admin-table-card robot-admin-card"><div class="admin-table-header"><div><h2>MQTT 로봇 시뮬레이터</h2><p>사용자 웹에 표시되는 연결·고장·위치 상태를 시뮬레이션합니다.</p></div><span class="demo-mark">TOPIC TELEMETRY</span></div><div id="admin-robots" class="admin-robot-grid"></div></div>
+        <div class="admin-table-card"><div class="admin-table-header"><div><h2>등록된 택배</h2><p>보관 및 배송 상태를 확인할 수 있습니다.</p></div><div class="admin-filter"><label for="status-filter">상태</label><select id="status-filter"><option value="">전체</option><option value="STORED">보관 완료</option><option value="ROBOT_PREPARING">로봇 운송 준비 중</option><option value="DELIVERED">배송 완료</option></select></div></div><div class="table-scroll"><table><thead><tr><th>접수번호</th><th>목적지</th><th>크기</th><th>보관 구역</th><th>상태</th><th>등록 시각</th><th>다음 작업</th></tr></thead><tbody id="parcels-body"></tbody></table></div><div class="table-note">※ 배송 완료 변경은 현재 데모용 수동 처리입니다. 실제 로봇과 연동되면 배송 결과로 갱신해야 합니다.</div></div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

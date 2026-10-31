@@ -20,6 +20,7 @@
     <button data-page="robots"><span>▣</span>로봇</button>
     <button data-page="jobs"><span>≡</span>작업 게시판</button>
     <button data-page="presets"><span>▤</span>작업 프리셋</button>
+    <button type="button" onclick="location.href='/static/locker.html'"><span>▦</span>보관소 배송</button>
     <div class="nav-divider"></div>
     <button data-page="maps"><span>▱</span>맵 관리</button>
     <button data-page="locations"><span>⌖</span>목적지·도킹</button>
@@ -47,6 +48,7 @@
               <button id="addZone" type="button">▱ 구역 <small>Zone</small></button>
               <button id="addLocation" type="button">⌖ 목적지 <small>Location</small></button>
               <button id="addDockingStation" type="button">▣ 도킹 스테이션 <small>충전</small></button>
+              <button id="addPickupStation" type="button">⇲ 픽업스테이션 <small>Pickup</small></button>
             </div>
           </details>
         <details id="layers"><summary>▱ 표시 항목</summary><div class="layer-options">
@@ -54,6 +56,7 @@
           <label><input type="checkbox" data-layer="zones" checked> 구역</label>
           <label><input type="checkbox" data-layer="locations" checked> 목적지</label>
           <label><input type="checkbox" data-layer="docks" checked> 충전·주차 지점</label>
+          <label><input type="checkbox" data-layer="parcels" checked> 하차 물품</label>
           <label><input type="checkbox" data-layer="labels" checked> 이름</label>
         </div></details></div>
         <div class="zoom-tools"><button id="zoomOut" aria-label="축소">−</button><button id="zoomIn" aria-label="확대">+</button><button id="fitMap">전체 맞춤</button></div>
@@ -64,14 +67,23 @@
         <p id="zoneHint" role="status">맵에서 드래그해 사각형을 만드세요.</p>
         <form id="zoneForm">
           <label>구역 이름<input name="name" required maxlength="128" placeholder="구역 이름"></label>
-          <label>구역 종류<select name="type"><option value="prohibit">주행금지구역 (Forbidden zone)</option><option value="elevator">엘리베이터 구역</option></select></label>
+          <label id="zoneTypeLabel">구역 종류<select name="type"><option value="prohibit">주행금지구역 (Forbidden zone)</option><option value="elevator">엘리베이터 구역</option></select></label>
           <div class="zone-dimensions">
             <label>X (m)<input name="x" type="number" step="any" required></label>
             <label>Y (m)<input name="y" type="number" step="any" required></label>
             <label>가로 (m)<input name="width" type="number" step="any" required min="0.001"></label>
             <label>세로 (m)<input name="height" type="number" step="any" required min="0.001"></label>
           </div>
-          <p class="muted">저장하면 새 맵 버전을 활성화하고 로봇에 전달합니다. 엘리베이터 구역은 위치 표시용입니다.</p>
+          <fieldset id="pickupNodeFields" class="pickup-node" hidden>
+            <legend>픽업 지점 (node)</legend>
+            <div class="zone-buttons"><button id="pickupStepZone" type="button">구역 편집</button><button id="pickupStepNode" type="button">픽업 지점 지정</button></div>
+            <div class="zone-dimensions">
+              <label>X (m)<input name="nodeX" type="number" step="any"></label>
+              <label>Y (m)<input name="nodeY" type="number" step="any"></label>
+            </div>
+            <label>방향 (°)<input name="nodeHeading" type="number" step="any"></label>
+          </fieldset>
+          <p id="zoneDescription" class="muted">저장하면 새 맵 버전을 활성화하고 로봇에 전달합니다. 엘리베이터 구역은 위치 표시용입니다.</p>
           <div class="zone-buttons"><button id="saveZone" class="primary" disabled>구역 저장</button><button id="cancelZone" type="button">취소</button></div>
         </form>
       </section>
@@ -140,7 +152,7 @@
   </section>
   <section id="page-locations" class="page content-page" hidden>
     <div class="page-heading"><div><h2>목적지·도킹</h2><p>목적지의 좌표와 방향을 관리합니다. 충전·주차 지점은 맵에서 별도 기호로 표시합니다.</p></div></div>
-    <div class="panel"><h3 id="locFormTitle">목적지 등록</h3><form id="locForm"><label>이름<input name="name" required placeholder="충전소-A"></label><label>맵<select name="map_id" class="map-options" required></select></label><label>X (m)<input name="x" type="number" step="any" required></label><label>Y (m)<input name="y" type="number" step="any" required></label><label>방향 (rad)<input name="theta" type="number" step="any" value="0" required></label><label>용도<select name="type"><option value="station">작업 지점</option><option value="charger">충전소</option><option value="parking">주차 지점</option><option value="waypoint">경유점</option><option value="other">기타</option></select></label><button class="primary">저장</button><button type="button" id="cancelLocEdit" hidden>편집 취소</button></form></div>
+    <div class="panel"><h3 id="locFormTitle">목적지 등록</h3><form id="locForm"><label>이름<input name="name" required placeholder="충전소-A"></label><label>맵<select name="map_id" class="map-options" required></select></label><label>X (m)<input name="x" type="number" step="any" required></label><label>Y (m)<input name="y" type="number" step="any" required></label><label>방향 (rad)<input name="theta" type="number" step="any" value="0" required></label><label>용도<select name="type"><option value="station">작업 지점</option><option value="charger">충전소</option><option value="parking">주차 지점</option><option value="waypoint">경유점</option><option value="other">기타</option><option value="pickup" disabled>픽업 지점 (맵의 ＋ 픽업스테이션)</option></select></label><button class="primary">저장</button><button type="button" id="cancelLocEdit" hidden>편집 취소</button></form></div>
     <h3>등록한 목적지</h3><div class="table-wrap"><table><thead><tr><th>이름</th><th>맵</th><th>용도</th><th>X / Y / 방향</th><th></th></tr></thead><tbody id="locationRows"></tbody></table></div>
     <h3>맵에 포함된 위치</h3><p class="muted">선택한 맵 버전의 원본 위치입니다. 작업 목적지로 쓰려면 가져오기를 누르세요.</p><div class="table-wrap"><table><thead><tr><th>이름</th><th>용도</th><th>X / Y / 방향</th><th></th></tr></thead><tbody id="annotationRows"></tbody></table></div>
   </section>

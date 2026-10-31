@@ -13,3 +13,4 @@ uvicorn[standard]>=0.30
 python-multipart>=0.0.9   # 맵 업로드 (멀티파트)
 pytest>=8.0               # fms_server/tests
 httpx>=0.27               # fastapi.testclient
+bcrypt==4.2.1              # LastGate 세대·키오스크 계정

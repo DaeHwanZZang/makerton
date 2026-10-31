@@ -25,6 +25,8 @@ window.robotDetails = (()=>{
     const taskLabel=el('div','현재 작업','rd-label'),taskTitle=el('div',undefined,'rd-task-title'),taskStep=el('p');
     const progress=el('progress');progress.setAttribute('aria-label','작업 단계 진행률');
     task.append(taskLabel,taskTitle,taskStep,progress);
+    // 직사각형 적재부를 둘로 나눈 두 트레이. FMS 장부(액션 완료 보고 기준)의 값이다.
+    const cargo=el('section',undefined,'rd-cargo');cargo.setAttribute('aria-label','적재 트레이');
     const facts=el('dl',undefined,'rd-facts');
     function fact(label){const row=el('div'),value=el('dd');row.append(el('dt',label),value);facts.append(row);return value;}
     const mode=fact('운전 모드'),localization=fact('위치 추정'),speed=fact('속도');
@@ -34,17 +36,17 @@ window.robotDetails = (()=>{
     function detail(label){const row=el('div'),value=el('dd');row.append(el('dt',label),value);diagnosticRows.append(row);return value;}
     const x=detail('X 좌표'),y=detail('Y 좌표'),heading=detail('방향'),map=detail('배정 맵'),sync=detail('맵 동기화'),version=detail('보고 맵 버전'),score=detail('위치 추정 점수'),size=detail('로봇 크기'),order=detail('오더 ID');
     const updated=el('footer',undefined,'rd-updated');
-    root.append(header,status,notice,battery,task,facts,errors,diagnostics,updated);
+    root.append(header,status,notice,battery,task,cargo,facts,errors,diagnostics,updated);
     container.replaceChildren(root);
     const card={root,name,connection,status,notice,charge,chargeState,batteryTrack,batteryFill,
-      taskTitle,taskStep,progress,mode,localization,speed,errors,diagnostics,
+      taskTitle,taskStep,progress,mode,localization,speed,errors,diagnostics,cargo,cargoKey:null,
       x,y,heading,map,sync,version,score,size,order,updated,errorKey:null};
     cards.set(container,card);return card;
   }
   function describe(command){
     if(!command)return '마무리 중';
     if(command.type==='wait')return `대기 ${command.duration}초`;
-    const type={move:'이동',docking:'충전 도킹',parking:'주차'}[command.type]||command.type;
+    const type={move:'이동',docking:'충전 도킹',parking:'주차',pickup:'적재',drop:'하차'}[command.type]||command.type;
     return `${type} · ${command.target||'현재 위치'}`;
   }
   function render(container,robot,job){
@@ -90,6 +92,7 @@ window.robotDetails = (()=>{
     set(c.version,s?.map_version||'—');set(c.score,Number.isFinite(s?.localization_score)?number(s.localization_score*100,0,'%'):'—');
     set(c.size,Number.isFinite(s?.width)&&Number.isFinite(s?.length)?`${number(s.width)} × ${number(s.length)} m`:'—');
     set(c.order,s?.order_id||job?.order_id||'—');
+    renderCargo(c,typeof app!=='undefined'?app.cargo?.robots?.[robot.robot_id]:null);
     const errorKey=JSON.stringify(s?.errors||[]);
     if(errorKey!==c.errorKey){
       c.errorKey=errorKey;c.errors.replaceChildren();c.errors.hidden=!s?.errors?.length;
@@ -109,6 +112,24 @@ window.robotDetails = (()=>{
       const ago=age<1?'방금':age<60?`${age}초 전`:age<3600?`${Math.floor(age/60)}분 전`:`${Math.floor(age/3600)}시간 전`;
       set(c.updated,`마지막 수신 ${ago} · ${new Date(robot.last_state_at*1000).toLocaleTimeString('ko-KR')}`);
     }else set(c.updated,'상태 수신 이력 없음');
+  }
+  const trayStates={empty:'비어 있음',reserved:'적재 예정',loading:'적재 중',occupied:'적재됨',unloading:'하차 중',unknown:'확인 필요'};
+  function renderCargo(c,cargo){
+    const key=JSON.stringify(cargo||null);
+    if(key===c.cargoKey)return;
+    c.cargoKey=key;c.cargo.replaceChildren();c.cargo.hidden=!cargo;
+    if(!cargo)return;
+    const bundle=cargo.bundle;
+    c.cargo.append(el('div',bundle?`적재 트레이 · ${bundle.summary} ${bundle.progress}`:'적재 트레이','rd-label'));
+    const grid=el('div',undefined,'rd-trays');
+    for(const tray of cargo.trays){
+      const box=el('div',undefined,'rd-tray');box.dataset.state=tray.state;
+      box.append(el('strong',tray.tray_id),el('span',trayStates[tray.state]||tray.state));
+      if(tray.parcel)box.append(el('small',`${tray.parcel.parcel_id.slice(0,10)}… · ${tray.parcel.household}`));
+      grid.append(box);
+    }
+    c.cargo.append(grid);
+    if(cargo.trays.some(t=>t.state==='unknown'))c.cargo.append(el('p','확인 필요한 물품이 있습니다. 보관소 배송 화면에서 실물을 대조하세요.','rd-notice'));
   }
   return {render};
 })();

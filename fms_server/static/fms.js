@@ -3,13 +3,13 @@
 const $ = s => document.querySelector(s);
 const enc = encodeURIComponent;
 const app = {
-  page:'map', sites:[], site:null, detail:null, map:null, locations:[], robots:new Map(), jobs:[], steps:[], edit:null, selection:null, mapToken:0, siteToken:0
+  page:'map', sites:[], site:null, detail:null, map:null, locations:[], pickupStations:[], cargo:null, robots:new Map(), jobs:[], steps:[], edit:null, selection:null, mapToken:0, siteToken:0
 };
 const titles = {
   map:'실시간 맵', robots:'로봇', jobs:'작업 게시판', presets:'작업 프리셋', maps:'맵 관리', locations:'목적지·도킹', elevators:'엘리베이터', settings:'현장 설정'
 };
 const types = {
-  station:'작업 지점', charger:'충전소', parking:'주차 지점', waypoint:'경유점', other:'기타'
+  station:'작업 지점', charger:'충전소', parking:'주차 지점', waypoint:'경유점', pickup:'픽업 지점', other:'기타'
 };
 const states = {
   IDLE:'대기', BUSY:'작업 중', MOVING:'이동 중', ERROR:'오류', EMERGENCY:'비상 정지', CHARGING:'충전 중', PAUSED:'일시 정지', ONLINE:'연결됨', OFFLINE:'연결 끊김', STALE:'수신 지연', LOST:'연결 유실', UNREGISTERED:'미등록', pending:'배정 대기', assigned:'배정됨 · 응답 대기', canceling:'취소 확인 중', working:'진행 중', success:'완료', failed:'실패', canceled:'취소', LOCALIZED:'위치 확인됨', UNLOCALIZED:'위치 미확정', LOCALIZING:'위치 확인 중'
@@ -153,12 +153,13 @@ async function selectSite(id) {
 async function refreshSite(token=app.siteToken) {
   if(!app.site)return;
   const base=siteURL();
-  const [detail,locs,jobs,presets]=await Promise.all([request(base),request(`${base}/locations`),request(`${base}/jobs`),request(`${base}/presets`)]);
+  const [detail,locs,jobs,presets,stations]=await Promise.all([request(base),request(`${base}/locations`),request(`${base}/jobs`),request(`${base}/presets`),request(`${base}/pickup-stations`)]);
   if(token!==app.siteToken)return;
   // 다른 사용자의 버전 변경이나 주기 갱신이 작성 중인 구역을 지우지 않게 한다.
   if(window.zoneEditor?.active || window.pointEditor?.active)return;
   app.detail=detail;
   app.locations=locs;
+  app.pickupStations=stations;
   app.jobs=jobs;
   refreshRobotInfo();
   app.presets=presets;
@@ -255,9 +256,10 @@ function poseText(p) {
 function renderLocations() {
   const tb=$('#locationRows');
   tb.replaceChildren();
-  for(const l of app.locations)row(tb,[l.name,l.map_id,types[l.type]||l.type,poseText(l),[button('편집',()=>fillLocation(l,true)),button('삭제',async()=>{
+  // 픽업 지점은 구역과 함께 맵의 픽업스테이션 메뉴에서 삭제한다. 여기서는 이름만 바꾼다.
+  for(const l of app.locations)row(tb,[l.name,l.map_id,types[l.type]||l.type,poseText(l),[button('편집',()=>fillLocation(l,true)),...(l.type==='pickup'?[]:[button('삭제',async()=>{
     if(!confirm(`목적지 '${l.name}'을 삭제할까요?`))return;await request(`${siteURL()}/locations/${enc(l.name)}`,'DELETE');if(app.edit===l.name)resetEdit();await refreshSite();notify('목적지를 삭제했습니다.');
-  },'danger')]]);
+  },'danger')])]]);
   empty(tb,5,app.site?'등록한 목적지가 없습니다.':'먼저 현장을 선택하세요.');
   options($('#jobTarget'),app.locations.map(l=>[l.name,`${l.name} (${l.map_id})`]),'목적지 선택');
   renderAnnotations();
@@ -295,7 +297,7 @@ function renderJobs() {
   for(const j of app.jobs){
     if(window.jobUI && !window.jobUI.visible(j))continue;
     const actions=[];
-    if(j.status==='pending'){
+    if(j.status==='pending'&&!j.external_owner){
       const choice=el('select');
       choice.setAttribute('aria-label',`${j.job_id}에 배정할 로봇`);
       options(choice,(app.detail?.robots||[]).map(r=>[r.robot_id,r.robot_id]),'로봇 지정');
@@ -310,7 +312,7 @@ function renderJobs() {
       if(!confirm(`${j.job_id} 작업을 취소할까요?`))return;await request(`${siteURL()}/jobs/${enc(j.job_id)}/cancel`,'POST',{
       });await refreshSite();
     }));
-    else if(j.status!=='canceling')actions.push(button('삭제',async()=>{
+    else if(j.status!=='canceling'&&!j.external_owner)actions.push(button('삭제',async()=>{
       if(!confirm(`${j.job_id} 작업을 삭제할까요?`))return;await request(`${siteURL()}/jobs/${enc(j.job_id)}`,'DELETE');await refreshSite();
     },'danger'));
     if(j.status==='pending')actions.push(button('취소',async()=>{await request(`${siteURL()}/jobs/${enc(j.job_id)}/cancel`,'POST',{});await refreshSite();}));
@@ -381,7 +383,7 @@ const canvas=$('#mapCanvas'),ctx=canvas.getContext('2d');
 const view={
   image:null,meta:null,annotations:{
   },version:null,scale:1,tx:0,ty:0,w:0,h:0,hits:[],layers:{
-    robots:true,zones:true,locations:true,docks:true,labels:true
+    robots:true,zones:true,locations:true,docks:true,parcels:true,labels:true
   }
 };
 function clearMap() {
@@ -510,7 +512,7 @@ function draw() {
     ctx.beginPath();
     pts.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));
     ctx.closePath();
-    const color=z.type==='elevator'?'#ab9aee':z.type==='slow'?'#d6ad59':z.type==='oneway'?'#77a9e4':'#e57982';
+    const color=z.type==='pickup'?'#f0a35e':z.type==='elevator'?'#ab9aee':z.type==='slow'?'#d6ad59':z.type==='oneway'?'#77a9e4':'#e57982';
     ctx.fillStyle=color+'32';
     ctx.fill();
     ctx.strokeStyle=color;
@@ -519,7 +521,13 @@ function draw() {
     view.hits.push({
       kind:'zone',data:z,pts
     });
-    if(view.layers.labels&&view.scale/view.meta.resolution>12)text(z.name||label(z.type),pts[0].x+6,pts[0].y+16,color);
+    const station=z.type==='pickup'?app.pickupStations.find(s=>s.station_id===z.zone_id):null;
+    if(station?.node){
+      // 표시용 구역과 픽업 node 의 1:1 연결선. node 는 구역 밖일 수 있다.
+      const c=pts.reduce((a,p)=>({x:a.x+p.x/pts.length,y:a.y+p.y/pts.length}),{x:0,y:0}),n=point(station.node);
+      ctx.save();ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(c.x,c.y);ctx.lineTo(n.x,n.y);ctx.stroke();ctx.restore();
+    }
+    if(view.layers.labels&&view.scale/view.meta.resolution>12)text(station?.name||z.name||label(z.type),pts[0].x+6,pts[0].y+16,color);
   }
   const locs=[...(view.annotations.locations||[]).map(l=>({
     ...l,source:'맵',pose:l.pose
@@ -527,10 +535,11 @@ function draw() {
     ...l,source:'등록',pose:l
   }))];
   for(const l of locs){
+    if(l.zone_id&&window.zoneEditor?.editingId===l.zone_id)continue;
     const dock=['charger','parking'].includes(l.type);
     if(!(dock?view.layers.docks:view.layers.locations))continue;
     const p=point(l.pose),selected=app.selection?.key===`location:${l.source}:${l.name}`;
-    const color=l.type==='charger'?'#77d8c3':l.type==='parking'?'#b3a1ed':'#e2bd79';
+    const color=l.type==='charger'?'#77d8c3':l.type==='parking'?'#b3a1ed':l.type==='pickup'?'#f0a35e':'#e2bd79';
     ctx.save();
     ctx.translate(p.x,p.y);
     ctx.strokeStyle=color;
@@ -562,6 +571,25 @@ function draw() {
     view.hits.push({
       kind:'location',data:l,x:p.x,y:p.y,r:15
     });
+  }
+  // DROP 완료로 바닥에 내려놓은 물품. 같은 위치의 물품은 ID 목록으로 묶는다 (논리적 하차 결과).
+  if(view.layers.parcels){
+    const spots=new Map();
+    for(const parcel of app.cargo?.parcels||[]){
+      const d=parcel.status==='delivered'?parcel.drop_position:null;
+      if(!d||d.map_id!==app.map)continue;
+      const key=`${d.x.toFixed(2)},${d.y.toFixed(2)}`;
+      if(!spots.has(key))spots.set(key,{pose:d,parcels:[]});
+      spots.get(key).parcels.push(parcel);
+    }
+    for(const spot of spots.values()){
+      const p=point(spot.pose);
+      ctx.save();ctx.fillStyle='#c98a4b';ctx.strokeStyle='#f6d7ad';ctx.lineWidth=1.5;
+      spot.parcels.forEach((_,i)=>{ctx.fillRect(p.x-7+i*5,p.y+10-i*5,12,10);ctx.strokeRect(p.x-7+i*5,p.y+10-i*5,12,10);});
+      ctx.restore();
+      if(view.layers.labels)spot.parcels.forEach((parcel,i)=>text(`${parcel.parcel_id.slice(0,10)}…`,p.x+12,p.y+30+i*14,'#f6d7ad'));
+      view.hits.push({kind:'parcel',data:spot,x:p.x,y:p.y+15,r:14});
+    }
   }
   const robots=mapRobots();
   for(const r of robots){
@@ -635,7 +663,7 @@ function showObject(hit) {
   box.replaceChildren();
   const d=hit.data;
   app.selection={
-    ...hit,key:hit.kind==='robot'?`robot:${d.robot_id}`:hit.kind==='location'?`location:${d.source}:${d.name}`:`zone:${d.zone_id}`
+    ...hit,key:hit.kind==='robot'?`robot:${d.robot_id}`:hit.kind==='location'?`location:${d.source}:${d.name}`:hit.kind==='parcel'?`parcel:${d.pose.x},${d.pose.y}`:`zone:${d.zone_id}`
   };
   $('#objectInfo').hidden=false;
   $('#objectInfo').classList.toggle('robot-popup',hit.kind==='robot');
@@ -651,18 +679,37 @@ function showObject(hit) {
       $('#objectInfo').hidden=true;
     }
   }
+  else if(hit.kind==='parcel'){
+    box.append(el('h3',`바닥 하차 물품 ${d.parcels.length}개`),el('p',`${d.pose.target||''} · ${poseText(d.pose)}`));
+    for(const parcel of d.parcels)box.append(el('p',`${parcel.parcel_id} · ${parcel.source.receipt_no} → ${parcel.household} (${parcel.tray_id})`));
+    box.append(el('p','DROP 완료 보고로 기록한 논리적 하차 위치입니다.','muted'));
+  }
   else if(hit.kind==='location'){
     box.append(el('h3',d.name),el('p',types[d.type]||d.type),el('p',`좌표: ${poseText(d.pose)}`),el('p',d.source==='등록'?'관리자가 등록한 목적지':'맵에 포함된 원본 위치'),button(d.source==='등록'?'목적지 편집':'목적지로 가져오기',()=>fillLocation({
       ...d.pose,name:d.name,type:d.type,map_id:app.map
     },d.source==='등록')));
+    const station=d.type==='pickup'&&d.source==='등록'?app.pickupStations.find(s=>s.station_id===d.zone_id):null;
+    if(station)pickupStationInfo(box,station,false);
   }
   else {
-    box.append(el('h3',d.name||'이름 없는 구역'),el('p',({
-      prohibit:'주행금지구역 (Forbidden zone)',elevator:'엘리베이터 구역 · 위치 표시용',slow:'감속 구역 · 표시 전용',oneway:'일방통행 구역 · 표시 전용'
+    const station=d.type==='pickup'?app.pickupStations.find(s=>s.station_id===d.zone_id):null;
+    box.append(el('h3',station?.name||d.name||'이름 없는 구역'),el('p',({
+      prohibit:'주행금지구역 (Forbidden zone)',elevator:'엘리베이터 구역 · 위치 표시용',slow:'감속 구역 · 표시 전용',oneway:'일방통행 구역 · 표시 전용',
+      pickup:'픽업스테이션 구역 · 적재 장치 위치 표시용 (주행을 막지 않음)'
     })[d.type]||d.type));
+    if(station)pickupStationInfo(box,station,true);
     window.zoneEditor?.actions(box,d);
   }
   draw();
+}
+function pickupStationInfo(box,station,fromZone) {
+  box.append(el('p',`스테이션 ID: ${station.station_id}`));
+  if(station.node)box.append(el('p',`픽업 지점: ${poseText(station.node)}`));
+  if(station.status!=='ok'){
+    box.append(el('p',`연결 확인 필요: ${station.problems.join(', ')}`,'warn'));
+    // 구역이 사라진 손상 스테이션은 구역을 클릭할 수 없으므로 node 쪽에서 정리한다.
+    if(!fromZone&&window.zoneEditor)box.append(button('픽업스테이션 삭제',()=>window.zoneEditor.deleteStation(station),'danger'));
+  }
 }
 $('#closeInfo').onclick=()=>{
   app.selection=null;
@@ -804,6 +851,20 @@ connectStream();
 setInterval(()=>{
   health();run(pollFleet);
 },3000);
+// 물품 장부(트레이·바닥 하차)는 액션 진행에 맞춰 자주 갱신한다.
+let cargoBusy=false;
+async function pollCargo() {
+  if(!app.site||cargoBusy)return;
+  cargoBusy=true;
+  try{
+    const site=app.site,body=await request(`${siteURL()}/cargo`);
+    if(site!==app.site)return;
+    const changed=JSON.stringify(body)!==JSON.stringify(app.cargo);
+    app.cargo=body;
+    if(changed){refreshRobotInfo();draw();}
+  }finally{cargoBusy=false;}
+}
+setInterval(()=>run(pollCargo),1500);
 setInterval(()=>{
   if(!app.site||siteBusy)return;siteBusy=true;run(async()=>{
     try{

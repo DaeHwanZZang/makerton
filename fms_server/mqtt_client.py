@@ -21,6 +21,7 @@ paho-mqtt 2.x API (`CallbackAPIVersion.VERSION2`). 네트워크 루프는 `loop_
 from __future__ import annotations
 
 import logging
+import json
 from typing import Optional
 
 import paho.mqtt.client as mqtt
@@ -48,6 +49,7 @@ class FmsMqttClient:
         self._fleet = fleet
         self._settings = settings
         self._connected = False
+        self._json_handlers = {}
 
         self._client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
@@ -86,6 +88,17 @@ class FmsMqttClient:
 
     # -- 발행 ------------------------------------------------------------
 
+    def subscribe_json(self, topic, handler):
+        """시작 전에 등록한 보관소 토픽을 재연결 때도 구독한다."""
+        self._json_handlers[topic] = handler
+
+    def publish_json(self, topic, payload, retain=False):
+        if not self.connected:
+            raise ConnectionError("MQTT 연결 대기 중")
+        info = self._client.publish(topic, json.dumps(payload, ensure_ascii=False), qos=1, retain=retain)
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            raise ConnectionError(f"MQTT 발행 실패: {info.rc}")
+
     def publish_order(self, order: Order) -> None:
         topic = topic_order(order.robot_id)
         payload = order.model_dump_json()
@@ -107,6 +120,8 @@ class FmsMqttClient:
             return
         self._connected = True
         client.subscribe([(TOPIC_STATE_ALL, 0), (TOPIC_CONNECTION_ALL, 1)])
+        for topic in self._json_handlers:
+            client.subscribe(topic, qos=1)
         log.info("MQTT 연결됨, 구독: %s, %s", TOPIC_STATE_ALL, TOPIC_CONNECTION_ALL)
 
     def _on_disconnect(self, client: mqtt.Client, userdata, *args) -> None:
@@ -114,6 +129,14 @@ class FmsMqttClient:
         log.warning("MQTT 연결 끊김 — 재연결 시도 중")
 
     def _on_message(self, client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
+        if msg.topic in self._json_handlers:
+            try:
+                payload = json.loads(msg.payload.decode("utf-8"))
+                if isinstance(payload, dict):
+                    self._json_handlers[msg.topic](payload)
+            except (ValueError, UnicodeDecodeError):
+                log.warning("보관소 JSON 메시지 무시: %s", msg.topic)
+            return
         robot_id, kind = _parse_topic(msg.topic)
         if robot_id is None:
             log.debug("알 수 없는 토픽 무시: %s", msg.topic)

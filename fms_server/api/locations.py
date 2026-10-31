@@ -57,6 +57,7 @@ class LocationOut(BaseModel):
     y: float
     theta: float
     type: str
+    zone_id: str | None = None
     created_at: str
     updated_at: str
     warnings: list[str] = []
@@ -82,7 +83,7 @@ def _out(request: Request, site_id: str, loc: NamedLocation, warnings: list[str]
         map_uid = ""
     return LocationOut(
         name=loc.name, map_id=loc.map_id, map_uid=map_uid,
-        x=loc.x, y=loc.y, theta=loc.theta, type=loc.type,
+        x=loc.x, y=loc.y, theta=loc.theta, type=loc.type, zone_id=loc.zone_id,
         created_at=loc.created_at, updated_at=loc.updated_at,
         warnings=warnings or [],
     )
@@ -100,6 +101,13 @@ def _update_with_references(request, site_id, store, old_name, body):
     """
     fields = dict(new_name=body.name, map_id=body.map_id, x=body.x,
                   y=body.y, theta=body.theta, type=body.type)
+    current = store.get(old_name)
+    if current.type == "pickup" and any(
+            new is not None and new != old for new, old in (
+                (body.map_id, current.map_id), (body.x, current.x),
+                (body.y, current.y), (body.theta, current.theta))):
+        # 이름 변경만 허용한다. 위치는 연결 zone·임대 검사를 하는 픽업스테이션 API로만 바꾼다.
+        raise LocationError("픽업 지점의 위치는 픽업스테이션 편집에서 바꾸세요.")
     if body.name is None or body.name.strip() == old_name:
         return store.update(old_name, **fields)
     presets = request.app.state.presets
@@ -197,4 +205,6 @@ def delete_location(site_id: str, name: str, request: Request):
         store.delete(name)
     except LocationNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
+    except LocationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return {"deleted": name, "site_id": site_id}

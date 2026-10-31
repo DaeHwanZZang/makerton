@@ -3,7 +3,7 @@
 window.jobUI = (()=>{
   let presets=app.presets||[], steps=[], editId=null, stepIndex=null, dirty=false, filter='pending', saving=false;
   const $f=id=>$('#'+id);
-  const kinds={move:'이동',wait:'대기',docking:'충전 도킹',parking:'주차'};
+  const kinds={move:'이동',wait:'대기',docking:'충전 도킹',parking:'주차',pickup:'적재',drop:'하차'};
   function describe(c){
     if(c.type==='wait')return `대기 ${c.duration}초`;
     return `${kinds[c.type]||c.type} ${c.target||''}`;

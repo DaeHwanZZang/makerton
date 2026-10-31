@@ -7,7 +7,7 @@
 
     location : 이름 붙은 목표 지점 (station, charger, ...). Task 는 좌표가 아니라
                이름으로 목적지를 지정하고, FMS 가 여기서 Pose 로 바꿔 Order 에 싣는다.
-    zone     : 다각형 구역 (prohibit, ...). prohibit 는 FMS 가 서버에서 grid 에
+    zone     : 다각형 구역 (prohibit, elevator, pickup ...). prohibit 는 FMS 가 서버에서 grid 에
                구워버리므로(navi_gridmap.baked.png) 로봇은 보통 안 읽는다. 하지만
                런타임 동적 zone / 시각화를 위해 계약으로 유지한다.
 
@@ -62,6 +62,7 @@ class LocationType(str, Enum):
     CHARGER = "charger"       # 충전 스테이션
     PARKING = "parking"       # 대기/주차 지점
     WAYPOINT = "waypoint"     # 단순 경유점 (작업 없음)
+    PICKUP = "pickup"         # 픽업스테이션 node. site location 의 zone_id 로 pickup zone 과 1:1 연결
     OTHER = "other"
 
     @classmethod
@@ -93,6 +94,7 @@ class ZoneType(str, Enum):
 
     PROHIBIT = "prohibit"     # 진입 금지. FMS 가 grid 에 OCCUPIED 로 굽는다
     ELEVATOR = "elevator"     # 엘리베이터 구역. 위치 표시용, 호출/탑승 제어는 별도
+    PICKUP = "pickup"         # 픽업스테이션 구역. 적재 장치 위치 표시용. 굽지 않고 동작도 없다
     SLOW = "slow"             # 감속 구역 (미구현, 예약)
     ONEWAY = "oneway"         # 일방통행 (미구현, 예약)
 
@@ -175,6 +177,12 @@ class MapAnnotations(BaseModel):
         for loc in self.locations:
             if loc.location_id == location_id:
                 return loc
+        return None
+
+    def zone_by_id(self, zone_id: str) -> Optional[Zone]:
+        for z in self.zones:
+            if z.zone_id == zone_id:
+                return z
         return None
 
     def prohibit_zones(self) -> list[Zone]:

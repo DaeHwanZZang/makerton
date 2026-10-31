@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from common.map_annotations import Zone
+from common.map_annotations import Zone, ZoneType
 from common.schemas import Point
 from fms_server.mapkit.store import MapStoreError, MapVersionConflict, ZoneNotFound
 from fms_server.sites import SiteError
@@ -36,6 +36,11 @@ class RectangleZoneRequest(BaseModel):
 def _edit(request, site_id, map_id, version, zone_id, zone=None, *, create=False):
     try:
         store = request.app.state.sites.map_store(site_id)
+        if not create:
+            existing = store.load_annotations(map_id).zone_by_id(zone_id)
+            if existing is not None and existing.type == ZoneType.PICKUP:
+                # zone 만 바꾸면 node 와의 1:1 연결이 깨진다.
+                raise HTTPException(422, '픽업 구역은 픽업스테이션 편집에서 변경하세요.')
         result = store.edit_zone(map_id, version, zone_id, zone, create=create)
     except MapVersionConflict as exc:
         raise HTTPException(409, str(exc)) from None

@@ -209,8 +209,8 @@ def build_plan(commands, resolved: list[dict], start_map: str, site_id: str, ele
         pose = step["pose"]
         action = None
         if isinstance(command, ActionCommand):
-            if command.kind == "wait":
-                action = {"type": "wait", "duration": command.duration}
+            if command.kind in ("wait", "pickup", "drop"):
+                action = {"type": command.kind, "duration": command.duration, "params": dict(command.params)}
             else:
                 action = {"type": command.kind, "params": dict(command.params)}
                 if command.kind == "docking" and registry is not None:

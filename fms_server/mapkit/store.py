@@ -377,11 +377,12 @@ class MapStore:
         log.info("맵 %s 활성 버전 -> %s", map_id, version)
 
     def edit_zone(self, map_id: str, base_version: str, zone_id: str,
-                  zone=None, *, create: bool = False) -> IngestResult:
+                  zone=None, *, create: bool = False, activate: bool = True) -> IngestResult:
         """구역 한 개를 변경하고 원본 이미지에서 다시 굽는다. None이면 삭제한다.
 
         이전 baked 이미지를 입력으로 쓰면 삭제한 금지구역이 남으므로 source를 사용한다.
         기존 location과 다른 구역은 보존하며, 오래된 화면의 편집은 거절한다.
+        activate=False 면 새 버전만 준비한다 (픽업스테이션처럼 location 저장 후 호출자가 활성화).
         """
         with _EDIT_LOCK:
             if self.active_version(map_id) != base_version:
@@ -422,7 +423,7 @@ class MapStore:
                  "polygon": [[p.x, p.y] for p in z.polygon]} for z in zones
             ]}, ensure_ascii=False).encode("utf-8")
             return self.ingest_upload(
-                map_id, files, activate=True,
+                map_id, files, activate=activate,
                 despeckle_iterations=self.manifest(map_id, base_version).get("despeckle_iterations", 0),
             )
 

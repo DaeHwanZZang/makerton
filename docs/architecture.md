@@ -133,6 +133,10 @@ FMS는 루트 common을 직접 사용한다. 뷰어의 common은 사본이며, C
 - `allocator.py`는 게시판 작업을 1초마다 확인한다. 수동·자동 배정과 상태 갱신은 작업 코디네이터의 같은 락을 사용한다.
 - 지도 버전 저장은 `mapkit/store.py`, 읽기·검증은 `ingest.py`, 주행금지구역 굽기는 `bake.py`가 담당한다. 수정 시 이전 baked 이미지가 아니라 source를 재사용한다.
 - `locations.py`의 공유 RLock과 임시 파일 교체가 요청 간 쓰기를 보호한다. 목적지 이름 변경은 프리셋과 미해결 수동 pending 작업의 참조를 갱신하며, 이미 생성된 작업 스냅샷은 유지한다.
+- 픽업스테이션(`pickup_stations.py`, `api/pickup_stations.py`)은 맵 버전의 pickup zone과 `locations.json`의 `type=pickup` location을 `zone_id`로 1:1 연결한다.
+  락 순서는 `JobCoordinator.lock → _EDIT_LOCK → LocationStore._lock`이다. 생성·zone 변경은 `edit_zone(activate=False)`로 새 버전을 준비하고
+  location을 쓴 뒤 활성화한다. 두 파일은 원자적이지 않으므로 목록 조회가 양쪽을 대조해 broken을 표시하고 삭제로 정리한다.
+  pickup zone은 `prohibit_zones()`에 들지 않아 굽지 않는다.
 - HTML/CSS/JS는 `fms_server/static/`에서 제공하며 npm 빌드나 CDN은 필요 없다. `fms.js`는 현장·맵 선택과 Canvas, `zone-editor.js`/`map-points.js`는 배치 편집, `jobs.js`는 프리셋과 게시판을 맡는다.
 - `robot-details.js`는 DOM을 유지하며 팝업 데이터를 갱신한다. `elevator-status.js`는 운행 상태 표만 갱신해 연결 편집 폼을 보존한다. 서버 미연결, 상태 미수신, 오래된 마지막 수신값을 구분한다.
 - 뷰어의 따라가기 모드는 `map_follow.py`가 로봇 보고 UID/버전에 맞는 맵을 찾고 `MapCanvas.set_map()`으로 교체한다. GUI 조작은 Qt 메인 스레드에서 수행한다.
@@ -144,3 +148,20 @@ FMS는 루트 common을 직접 사용한다. 뷰어의 common은 사본이며, C
 3. planner 팽창 규칙을 바꾸면 `tools/clean_map.py`의 `inflate_free`와 생성 맵 검사도 맞춘다.
 4. physics 디버그 필드를 바꾸면 C++ 직렬화와 Qt 뷰어의 표시·자세 변환을 같이 확인한다.
 5. 기능 설명은 해당 사용자 문서 한 곳에서 관리하고 다른 문서는 링크로 연결한다.
+
+## LastGate 배송 연동
+
+- 보관소 `lastgate/server/core.py`가 물품·계정·묶음을 SQLite에 저장하고 `locker/robot/*` 계약을 발행한다.
+  DB 트랜잭션에 발행 대기열도 함께 기록하며 heartbeat로 active Job을 재통지한다.
+- `fms_server/locker.py`가 FMS MQTT 콜백의 큐를 별도 워커에서 소비한다. 네트워크 콜백에서 배송 계획을 수행하지 않는다.
+- 배송 전이와 작업 dispatch는 `JobCoordinator.lock`을 공유한다. `external_owner`와 로봇 예약으로
+  보관소 접근·최종 묶음 대기·PICK·DROP·복귀·오류 차단 사이의 중복 배정을 막는다.
+- 예약과 진행은 `locker_deliveries.json`에서 시작 시 복원한다. 하위 작업 생성 후 연결 저장 전에 중단되면
+  external_owner와 단계 이름으로 기존 작업을 찾아 재사용한다. assigned/working 오더는 재발행하지 않는다.
+- LastGate 확정 목록이 물품 장부의 기준이다. FMS는 목적지와 좌표를 복사해 하위 작업을 만들고 PICK/DROP FINISHED를 관측한다.
+  마지막 액션 뒤 1초 대기로 종료 보고를 관측하며 놓친 보고는 완료로 추정하지 않는다.
+- 물품별 DELIVERED는 DROP 후, FAILED와 JOB_DONE은 보관소 복귀 후 발행한다. 불확실 인도는 운영자가
+  실제 인도 목록과 잔여 적재물을 대조한 뒤 복귀시킨다. `docs/pickup-station.md`는 픽업스테이션·트레이 설계안이며 구현 단계를 표시한다.
+- FMS 물품 장부 `cargo.py`(`cargo.json`)가 물품 ID·묶음·트레이·상태를 소유한다. `locker.py`가 최종 묶음을 장부에 저장한 뒤
+  물품별 PICK/DROP 하위 작업을 만들고, tick마다 로봇 action_states를 관측해 RUNNING/FINISHED를 반영한다.
+  하위 작업이 FINISHED 없이 끝나면 시작이 관측된 물품만 unknown이 된다. 복귀 후 `TRAY_RETURN:{bundle_id}` DROP 완료로 묶음을 닫는다.

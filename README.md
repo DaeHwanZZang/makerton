@@ -16,6 +16,7 @@ FMS는 작업 프리셋과 게시판을 관리하고 가용 로봇에 작업을 
 | `tools/` | 통합 런처, 맵 생성·편집, 명령 발행, 회귀 검증 |
 | `maps/` | 로컬 실행과 업로드에 사용할 맵 샘플 |
 | `docs/` | 로봇·물리·맵 도구·구현 구조의 상세 설명 |
+| `lastgate/` | 택배 보관소·웹 키오스크·세대 웹 ([통합 실행 안내](lastgate/README.md)) |
 
 로봇 오더/상태와 승강기 명령/상태는 MQTT+JSON으로 주고받는다.
 웹 UI는 REST/WebSocket을 사용하고 맵 번들은 HTTP로 전달한다.
@@ -52,6 +53,8 @@ make
 `setup_mujoco.sh`는 MuJoCo 휠에서 헤더·라이브러리를 꺼내 `third_party/mujoco/`에 설치한다.
 `make`는 `robot_client`와 `tools/send_order`, `tools/place_obstacle`, `tools/obstacle_zone`을 만든다.
 프런트엔드 빌드 도구나 npm 설치는 필요 없다.
+택배 보관소·키오스크·세대 웹을 함께 쓰려면 Node.js와 별도 웹 의존성이 필요하다.
+[LastGate 안내](lastgate/README.md)에 설치·목적지 연결·배송·복귀 절차가 있다.
 
 ### Ubuntu
 
