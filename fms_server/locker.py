@@ -170,6 +170,8 @@ class LockerBridge:
 
     def _events(self, d):
         if d["phase"] == "canceled":
+            if d.get("locker_cancel"):
+                return []   # 보관소가 먼저 취소했다 (JOB_CANCELLED). 보낼 것이 없다.
             # 로봇 배정 전 운영자 취소. 보관소가 DELIVERY_JOB 을 다시 보내면 같은 취소를 다시 알린다.
             return [{"type": "JOB_REJECTED", "job_id": d["job_id"], "reason": d.get("error") or "",
                      "unroutable": d.get("unroutable") or []}]
@@ -193,6 +195,12 @@ class LockerBridge:
             log.warning("배송 결과 발행 보류: %s", d["job_id"])
             return
         self._last_send[d["job_id"]] = time.monotonic()
+
+    @staticmethod
+    def _tray_order(items):
+        """트레이 순(TRAY_A → TRAY_B) = 방문 순서. 트레이가 없거나 모르는 값이면 받은 순서를 유지한다."""
+        rank = {tray: i for i, tray in enumerate(TRAYS)}
+        return [it for _, it in sorted(enumerate(items), key=lambda p: (rank.get(p[1].get("tray"), len(TRAYS)), p[0]))]
 
     @staticmethod
     def _items(payload):
@@ -272,22 +280,51 @@ class LockerBridge:
                     parcel_of = {i["receipt_no"]: i["parcel_id"] for i in bundle["items"]}
                     d["parcels"] = [i["parcel_id"] for i in sorted(bundle["items"],
                                                                    key=lambda i: TRAYS.index(i["tray_id"]))]
-                    # 같은 세대에 가는 물품은 이동을 공유하지만 DROP 은 물품마다 따로 한다.
+                    # 방문 순서 = 트레이 순서 (보관소가 정한다). 같은 세대에 가는 물품은 이동을 공유하지만
+                    # DROP 은 물품마다 따로 한다. 세대는 처음 나온 트레이 순서로 들른다.
+                    target_of = {t["receipt_no"]: t for t in targets}
                     groups = {}
-                    for target in targets:
+                    for it in self._tray_order(d["items"]):
+                        target = target_of[it["receipt_no"]]
                         stop = groups.setdefault(target["household"], {**target, "receipts": [], "parcels": []})
                         stop["receipts"].append(target["receipt_no"])
                         stop["parcels"].append(parcel_of[target["receipt_no"]])
-                    d["stops"] = [groups[k] for k in sorted(groups)]
+                    d["stops"] = list(groups.values())
                     d["phase"], d["child_id"] = "loading", None
                 except (JobError, CargoError, ValueError, KeyError) as exc:
                     d["phase"], d["error"] = "blocked", str(exc)
                 self._save()
-            elif kind == "JOB_CANCELLED" and d and d["phase"] == "awaiting_bundle":
-                # 이미 보관소에 있으므로 반납 없이 충전 스테이션 도킹으로 넘어간다.
-                d["phase"] = "docking"
-                self._save()
-                self._replay(d)
+            elif kind == "JOB_CANCELLED" and d:
+                self._locker_cancel(d, str(payload.get("reason") or ""))
+
+    def _locker_cancel(self, d, reason):
+        """보관소가 적재 전에 배송을 취소했다 (도착 때 2개를 못 채움 NOT_ENOUGH·NO_ITEMS, 도착 전 EMPTIED).
+
+        - 로봇 배정 전: 배송을 끝낸다 (보관소에 보낼 것이 없다).
+        - 픽업 지점으로 이동 중: 이동을 취소하고 충전 스테이션으로 보낸다.
+        - 픽업 지점 도착 후(묶음 대기): 실은 것이 없으므로 반납 없이 충전 스테이션으로 보낸다.
+        - 적재를 시작한 뒤에는 무시한다 (보관소는 적재 확정 뒤 취소하지 않는다).
+        """
+        phase = d["phase"]
+        if phase not in ("queued", "to_pickup", "awaiting_bundle"):
+            return
+        d["locker_cancel"] = reason or "취소"
+        if phase == "queued":
+            d["phase"], d["error"] = "canceled", f"보관소 취소: {d['locker_cancel']}"
+            if d.get("robot_id"):
+                self.coordinator.release_robot(d["robot_id"], d["job_id"])
+            self._save()
+            return
+        if phase == "to_pickup" and d.get("child_id"):
+            child = self.jobs.get(d["child_id"])
+            if not child.status.terminal and child.status != JobStatus.CANCELING:
+                try:
+                    self.coordinator.cancel(child.job_id)
+                except JobError:
+                    pass   # 그 사이 끝났다. 도킹 작업 배정은 로봇이 비면 된다.
+        d["phase"], d["child_id"], d["error"] = "docking", None, None
+        self._save()
+        self._replay(d)
 
     def _child(self, d, commands, resolved):
         label = f'locker:{d["job_id"]}:{d["phase"]}:{d["index"]}'

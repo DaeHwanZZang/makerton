@@ -150,6 +150,7 @@
     },
     {"id": "locker", "name": "LastGate 보관소 서버", "mode": "single", "cmd": ["{python}", "server.py"], "cwd": "lastgate/server", "requires": ["broker"], "env": {"LOCKER_BROKER_HOST": "{host}", "LOCKER_BROKER_PORT": "{port}"}, "stop_timeout_s": 5},
     {"id": "locker_kiosk", "name": "LastGate 웹 키오스크", "mode": "single", "cmd": ["npm", "run", "dev"], "cwd": "lastgate/web", "requires": ["broker"], "env": {"VITE_BROKER_URL": "ws://{host}:9001"}, "stop_timeout_s": 5},
-    {"id": "locker_resident", "name": "LastGate 세대 웹", "mode": "single", "cmd": ["node", "server.mjs"], "cwd": "lastgate/end_user_wep", "requires": ["broker"], "env": {"LOCKER_BROKER_HOST": "{host}", "LOCKER_BROKER_PORT": "{port}"}, "stop_timeout_s": 5}
+    {"id": "locker_resident", "name": "LastGate 세대 웹", "mode": "single", "cmd": ["node", "server.mjs"], "cwd": "lastgate/end_user_wep", "requires": ["broker"], "env": {"LOCKER_BROKER_HOST": "{host}", "LOCKER_BROKER_PORT": "{port}"}, "stop_timeout_s": 5},
+    {"id": "locker_admin", "name": "LastGate 관리자 웹", "mode": "single", "cmd": ["node", "server.mjs"], "cwd": "lastgate/admin_web", "requires": ["broker"], "env": {"LOCKER_BROKER_HOST": "{host}", "LOCKER_BROKER_PORT": "{port}"}, "listens": 4190, "stop_timeout_s": 5}
   ]
 }

@@ -65,7 +65,7 @@ def list_bundles(site_id: str, request: Request):
 
 _DELIVERY_KEYS = ('job_id', 'phase', 'robot_id', 'child_id', 'error', 'bundle_id', 'pickup_name',
                   'return_name', 'return_trays', 'results', 'index', 'timeline', 'progress', 'bundle',
-                  'charger', 'dock_note')
+                  'charger', 'dock_note', 'locker_cancel')
 
 
 def _delivery_view(d):

@@ -41,5 +41,14 @@ class Rpc:
         finally:
             self._waiters.pop(request_id, None)
 
+    def site_config(self, timeout: float = 3.0) -> dict | None:
+        """retained 현장 설정(locker/config/site). 초기 설정 전이면 site 가 None."""
+        box: queue.Queue = queue.Queue()
+        self.mqtt.on(config.TOPIC_SITE_CONFIG, box.put)
+        try:
+            return box.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
     def close(self):
         self.mqtt.disconnect()

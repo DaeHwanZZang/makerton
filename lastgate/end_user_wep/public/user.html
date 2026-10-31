@@ -10,84 +10,82 @@
 </head>
 <body>
   <header class="user-header">
-    <a class="user-brand" href="/user" aria-label="LastGate 사용자 홈">
+    <a class="user-brand" href="/" aria-label="LastGate 세대 웹 홈">
       <span class="brand-mark" aria-hidden="true">⬡</span>
-      <span><strong>LastGate</strong><small>우리 단지 스마트 배송</small></span>
+      <span><strong>LastGate</strong><small id="site-name">우리 단지 스마트 배송</small></span>
     </a>
     <div class="header-actions" id="header-actions" hidden>
-      <span class="live-pill" id="live-pill"><i></i> <span id="live-text">서비스 정상</span></span>
-      <button class="text-button" id="logout-button" type="button">로그아웃</button>
+      <span class="live-pill" id="live-pill"><i></i><span id="live-text">실시간 연결</span></span>
+      <button class="icon-button" id="bell-button" type="button" aria-label="알림">🔔<b class="badge" id="unread-badge" hidden>0</b></button>
+      <button class="icon-button" id="settings-button" type="button" aria-label="설정">⚙</button>
     </div>
   </header>
 
   <main>
+    <!-- 로그인 -->
     <section class="auth-layout" id="auth-view">
       <div class="auth-intro">
         <span class="kicker">LAST MILE, MADE SIMPLE</span>
-        <h1>내 택배를 한눈에,<br><em>수령 방법은 내가 선택.</em></h1>
-        <p>단지 보관함 도착부터 직접 수령, 로봇 배송 대기까지 실시간으로 확인하세요.</p>
+        <h1>내 택배를 한눈에,<br><em>배송 시간은 내가 선택.</em></h1>
+        <p>보관함 도착 알림부터 배송 시간 예약, 로봇 위치까지 실시간으로 확인하세요.</p>
         <div class="intro-points">
-          <span><b>01</b> 여러 택배 통합 조회</span>
-          <span><b>02</b> 택배별 수령 방식 선택</span>
-          <span><b>03</b> 로봇 연결·위치 확인</span>
+          <span><b>01</b> 도착 즉시 알림</span>
+          <span><b>02</b> 10분 단위 배송 예약</span>
+          <span><b>03</b> 내 택배를 실은 로봇 확인</span>
         </div>
       </div>
       <div class="auth-card">
-        <form id="login-form" class="auth-form">
-          <div class="form-heading"><h2>우리 집 택배 확인</h2><p>세대 아이디(동-호수)와 관리사무소에서 받은 비밀번호로 로그인하세요.</p></div>
-          <label>아이디<input name="userId" type="text" autocomplete="username" maxlength="8" placeholder="101-412" required></label>
-          <label>비밀번호<input name="password" type="password" autocomplete="current-password" placeholder="비밀번호 입력" required></label>
+        <div class="form-alert form-alert-warn" id="not-initialized" hidden>보관소 관리자 초기 설정 전입니다. 설정이 끝나면 로그인할 수 있어요.</div>
+        <form id="login-form" class="auth-form" novalidate>
+          <div class="form-heading"><h2>우리 집 택배 확인</h2><p id="login-help">건물과 호실, 비밀번호로 로그인하세요. 처음이면 비밀번호는 1234 입니다.</p></div>
+          <label id="building-field"><span id="building-term">건물</span>
+            <select name="building" id="building-select" required></select>
+          </label>
+          <label><span id="unit-term">호실</span>
+            <input name="unit" id="unit-input" type="text" inputmode="numeric" autocomplete="username" maxlength="5" placeholder="예: 412" required>
+            <small class="field-hint" id="unit-guide"></small>
+          </label>
+          <label>비밀번호<input name="password" type="password" inputmode="numeric" autocomplete="current-password" maxlength="8" placeholder="숫자 4~8자리" required></label>
           <button class="primary-button" type="submit">로그인</button>
         </form>
         <div class="form-alert" id="auth-alert" role="alert" hidden></div>
       </div>
     </section>
 
+    <!-- 대시보드 -->
     <section class="dashboard" id="dashboard-view" hidden>
+      <div class="banner banner-warn" id="must-change-banner" hidden>
+        <span>초기 비밀번호(1234)를 쓰고 있어요. 다른 사람이 내 택배를 볼 수 없도록 바꿔 주세요.</span>
+        <button class="banner-button" type="button" data-open-settings>비밀번호 바꾸기</button>
+      </div>
+      <div class="banner banner-info" id="reload-banner" hidden>
+        <span>보관소 설정이 바뀌었어요.</span>
+        <button class="banner-button" type="button" id="reload-button">새로 불러오기</button>
+      </div>
+
       <div class="dashboard-hero">
-        <div><span class="kicker">MY LASTGATE</span><h1><span id="user-name"></span>님, 도착한 택배를 확인하세요.</h1><p id="user-address"></p></div>
+        <div><span class="kicker">MY LASTGATE</span><h1><span id="user-name"></span></h1><p id="hero-text">도착한 택배를 확인하세요.</p></div>
         <button class="refresh-button" id="refresh-button" type="button">↻ 새로고침</button>
       </div>
-      <nav class="dashboard-nav" aria-label="사용자 메뉴">
-        <button class="dashboard-nav-button active" data-dashboard-view="overview" type="button"><span>⌂</span> 홈</button>
-        <button class="dashboard-nav-button" data-dashboard-view="parcels" type="button"><span>▣</span> 내 택배 <b id="parcel-nav-count">0</b></button>
-        <button class="dashboard-nav-button" data-dashboard-view="robots" type="button"><span>⌁</span> 로봇 현황</button>
+      <nav class="dashboard-nav" aria-label="세대 메뉴">
+        <button class="dashboard-nav-button active" data-dashboard-view="parcels" type="button"><span>▣</span> 내 택배 <b id="parcel-nav-count">0</b></button>
+        <button class="dashboard-nav-button" data-dashboard-view="robots" type="button"><span>⌁</span> 배송 로봇 <b id="robot-nav-count" hidden>0</b></button>
       </nav>
 
-      <section id="overview-view" class="dashboard-view-panel">
+      <section id="parcels-view" class="dashboard-view-panel">
         <div id="summary-grid" class="summary-grid"></div>
-        <div class="quick-grid">
-          <button class="quick-card quick-card-primary" data-open-view="parcels" type="button">
-            <span class="quick-icon">▣</span><span><small>MY PARCELS</small><strong>내 택배 확인하기</strong><em id="parcel-quick-text">등록된 택배를 확인하세요.</em></span><i>→</i>
-          </button>
-          <button class="quick-card" data-open-view="robots" type="button">
-            <span class="quick-icon">⌁</span><span><small>ROBOT NETWORK</small><strong>배송 로봇 상태</strong><em id="robot-quick-text">통신 상태를 확인하세요.</em></span><i>→</i>
-          </button>
-        </div>
-        <div class="overview-guide"><span>이용 순서</span><ol><li>택배기사가 보관함에 택배를 등록합니다.</li><li><b>내 택배</b>에서 보관 상태를 확인합니다.</li><li>세대 기본 수령 방법을 정하고, 필요하면 택배별로 바꿉니다.</li></ol></div>
-      </section>
-
-      <section class="dashboard-section dashboard-view-panel" id="robots-view" hidden>
-        <div class="section-heading"><div><span class="section-kicker">MQTT ROBOT NETWORK</span><h2>배송 로봇 상태</h2></div><p>로봇 관제(FMS)가 보내는 통신 상태와 현재 위치가 표시됩니다.</p></div>
-        <div class="robot-grid" id="robot-grid"></div>
-      </section>
-
-      <section class="dashboard-section dashboard-view-panel" id="parcels-view" hidden>
-        <div class="section-heading"><div><span class="section-kicker">MY PARCELS</span><h2>내 택배</h2></div><p>여러 택배를 선택해 수령 방법을 한 번에 지정할 수 있습니다.</p></div>
-        <div class="parcel-list-header" id="parcel-list-header">
-          <div class="parcel-list-controls" id="parcel-selection-controls">
-            <label class="select-all-label"><input id="select-all-parcels" type="checkbox"> 택배 전체 선택</label>
-            <span>등록된 택배를 선택해 수령 방법을 변경할 수 있습니다.</span>
-          </div>
+        <div class="parcel-list-header">
+          <p class="muted">로봇 배송 택배는 보관 후 30분 안에 배송 시간을 고를 수 있어요. 고르지 않으면 자동으로 배송됩니다.</p>
           <button class="preference-toggle" id="preference-toggle" type="button" aria-expanded="false" aria-controls="delivery-preference-panel">
-            <span>기본 설정</span><strong id="default-delivery-label">로봇 배송</strong><i aria-hidden="true">⌄</i>
+            <span>기본 수령 방법</span><strong id="default-delivery-label">로봇 배송</strong><i aria-hidden="true">⌄</i>
           </button>
         </div>
         <section class="delivery-preference-panel" id="delivery-preference-panel" aria-labelledby="preference-title" hidden>
           <div class="preference-copy">
             <span class="section-kicker">DEFAULT DELIVERY</span>
             <h3 id="preference-title">우리 집 기본 수령 방법</h3>
-            <p>바꾸면 아직 로봇에 실리지 않은 택배가 모두 이 방법으로 바뀌고, 앞으로 등록되는 택배에도 적용됩니다.</p>
+            <p>바꾸면 아직 배송이 확정되지 않은 택배가 모두 이 방법으로 바뀌고, 앞으로 도착하는 택배에도 적용됩니다.
+              취급 주의·규격 초과 택배와 배송이 확정된 택배는 바뀌지 않아요.</p>
           </div>
           <div class="preference-options" role="group" aria-label="기본 수령 방법">
             <button class="preference-option" type="button" data-default-delivery="ROBOT" aria-pressed="false">
@@ -97,20 +95,64 @@
               <span class="preference-icon" aria-hidden="true">▣</span><span><strong>직접 수령</strong><small>출력 키오스크에서 로그인해 직접 수령</small></span><b aria-hidden="true">✓</b>
             </button>
           </div>
-          <p class="preference-server-state"><i aria-hidden="true"></i><span id="preference-server-text">서버와 동기화됨</span></p>
         </section>
         <div class="parcel-list" id="parcel-grid"></div>
-        <div class="parcel-selection-bar" id="parcel-selection-bar" hidden>
-          <div><strong id="selected-count">0개 선택</strong><span id="selection-help">선택한 택배의 수령 방법을 지정하세요.</span></div>
-          <div class="selection-actions">
-            <button class="selection-button robot-action" id="batch-robot-button" type="button">로봇 배송</button>
-            <button class="selection-button pickup-action" id="batch-pickup-button" type="button">직접 수령</button>
-            <button class="selection-clear" id="clear-selection-button" type="button">선택 해제</button>
-          </div>
-        </div>
       </section>
-      <div class="toast" id="toast" role="status" hidden></div>
+
+      <section class="dashboard-view-panel" id="robots-view" hidden>
+        <div class="section-heading"><div><span class="section-kicker">MY DELIVERY ROBOT</span><h2>내 택배를 실은 로봇</h2></div>
+          <p>로봇 관제(FMS)가 보내는 상태입니다. 다른 세대 배송 정보는 표시하지 않아요.</p></div>
+        <div class="robot-grid" id="robot-grid"></div>
+      </section>
     </section>
   </main>
+
+  <!-- 배송 시간 선택 -->
+  <dialog class="sheet" id="slot-dialog" aria-labelledby="slot-title">
+    <form method="dialog" class="sheet-inner" id="slot-form">
+      <header class="sheet-header"><div><span class="section-kicker">DELIVERY TIME</span><h2 id="slot-title">배송 시간 고르기</h2></div>
+        <button class="icon-button dark" value="cancel" aria-label="닫기">✕</button></header>
+      <p class="muted" id="slot-help">10분 단위로 한 칸에 2자리까지 먼저 예약한 순서대로 잡혀요. 배송 20분 전까지 바꾸거나 취소할 수 있어요.</p>
+      <fieldset class="slot-parcels" id="slot-parcels"><legend>함께 예약할 택배 (최대 2개)</legend></fieldset>
+      <div class="slot-legend"><span><i class="seat free"></i> 빈자리</span><span><i class="seat taken"></i> 예약됨</span><span><i class="seat mine"></i> 내 예약</span></div>
+      <div class="form-alert form-alert-warn" id="slot-alert" role="alert" hidden></div>
+      <div class="slot-list" id="slot-list"></div>
+      <footer class="sheet-footer">
+        <span id="slot-choice">시간을 고르세요.</span>
+        <button class="primary-button" type="button" id="slot-submit" disabled>예약하기</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- 알림 -->
+  <dialog class="sheet" id="notice-dialog" aria-labelledby="notice-title">
+    <form method="dialog" class="sheet-inner">
+      <header class="sheet-header"><div><span class="section-kicker">NOTIFICATIONS</span><h2 id="notice-title">알림</h2></div>
+        <div class="sheet-header-actions"><button class="text-link" type="button" id="read-all-button">모두 읽음</button>
+        <button class="icon-button dark" value="cancel" aria-label="닫기">✕</button></div></header>
+      <div class="notice-list" id="notice-list"></div>
+    </form>
+  </dialog>
+
+  <!-- 설정 -->
+  <dialog class="sheet" id="settings-dialog" aria-labelledby="settings-title">
+    <div class="sheet-inner">
+      <header class="sheet-header"><div><span class="section-kicker">SETTINGS</span><h2 id="settings-title">설정</h2></div>
+        <button class="icon-button dark" type="button" data-close-dialog aria-label="닫기">✕</button></header>
+      <dl class="account-info" id="account-info"></dl>
+      <form class="auth-form" id="password-form" novalidate>
+        <h3>비밀번호 바꾸기</h3>
+        <label>현재 비밀번호<input name="currentPassword" type="password" inputmode="numeric" autocomplete="current-password" maxlength="8" required></label>
+        <label>새 비밀번호<input name="newPassword" type="password" inputmode="numeric" autocomplete="new-password" maxlength="8" placeholder="숫자 4~8자리" required></label>
+        <label>새 비밀번호 확인<input name="confirmPassword" type="password" inputmode="numeric" autocomplete="new-password" maxlength="8" required></label>
+        <small class="field-hint">숫자 4~8자리. 1234 와 현재 비밀번호는 쓸 수 없어요. 바꾸면 다른 기기의 로그인은 끝나요.</small>
+        <div class="form-alert" id="password-alert" role="alert" hidden></div>
+        <button class="primary-button" type="submit">비밀번호 저장</button>
+      </form>
+      <button class="secondary-button" type="button" id="logout-button">로그아웃</button>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" hidden></div>
 </body>
 </html>

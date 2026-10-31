@@ -15,7 +15,7 @@ body{display:block;overflow:auto;background:var(--bg)}main{display:block;margin:
 <p>배송 1건은 트레이 반납 뒤 충전 스테이션 도킹까지이며, 그동안 같은 로봇을 예약합니다. 보관소에는 트레이 반납 시점에 완료를 알립니다. 도킹한 로봇은 충전량이 기준 이상이면 다음 배송을 받습니다.</p>
 <p>배송은 물품 2개가 모이면 출발하며 두 트레이(TRAY_A·TRAY_B)에 하나씩 싣습니다. 시뮬레이터는 지정한 시간의 PICK·DROP 액션 완료를 적재·인도로 간주합니다. 픽업스테이션(맵의 ＋ → 픽업스테이션)과 각 세대의 목적지를 먼저 등록하세요.</p>
 <p id="legacyPickup" class="warn" hidden></p>
-<table><thead><tr><th>세대 (동-호)</th><th>FMS 목적지</th><th></th></tr></thead><tbody id="mappings"></tbody></table>
+<table><thead><tr><th>세대 (건물-호실)</th><th>FMS 목적지</th><th></th></tr></thead><tbody id="mappings"></tbody></table>
 <p><button type="button" id="addMapping">세대 연결 추가</button> <button type="submit" class="primary">연결 저장</button></p>
 </form></section>
 <section><h2>배송 현황</h2><p>오류가 발생한 배송은 로봇 예약을 유지합니다. 로봇을 점검하고 적재물을 대조한 뒤 복귀를 요청하세요. 진행 중인 작업의 취소는 FMS 작업 게시판에서 합니다.</p>

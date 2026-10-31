@@ -1,9 +1,10 @@
 // 브라우저 ↔ 보관소 서버 MQTT 클라이언트 (Mosquitto WebSocket).
 // - 요청마다 request_id 를 붙이고, 응답은 이 클라이언트 전용 토픽에서만 받는다.
 // - request_id 가 없는 전용 토픽 메시지(PARCELS_UPDATE, REGISTER_CANCELLED)는 push 로 전달한다.
+// - retained 현장 설정(locker/config/site)·상태 요약·서버 online 을 함께 구독한다.
 import mqtt from "mqtt";
 import type { MqttClient } from "mqtt";
-import { BROKER_URL, TOPICS } from "./config";
+import { BROKER_URL, TOPICS, type SiteMessage } from "./config";
 
 export type Msg = Record<string, any>;
 
@@ -13,12 +14,15 @@ const decoder = new TextDecoder();
 export class LockerClient {
   readonly clientId: string;
   connected = false;
+  serverOnline: boolean | null = null;      // null = 아직 모름 (retained 수신 전)
   lastSummary: Msg | null = null;
+  lastSite: SiteMessage | null = null;
   private mq: MqttClient;
   private pending = new Map<string, { resolve: (m: Msg) => void; reject: (e: Error) => void; timer: number }>();
   private pushFns = new Set<(m: Msg) => void>();
   private statusFns = new Set<(c: boolean) => void>();
   private summaryFns = new Set<(m: Msg) => void>();
+  private siteFns = new Set<(m: SiteMessage) => void>();
 
   constructor(kioskId: string) {
     this.clientId = `${kioskId}-${randomId().slice(0, 6).toUpperCase()}`;
@@ -32,22 +36,33 @@ export class LockerClient {
       will: { topic: onlineTopic, payload: "offline", qos: 1, retain: true },
     });
     this.mq.on("connect", () => {
-      this.mq.subscribe([resTopic, TOPICS.summary], { qos: 1 });
+      this.mq.subscribe([resTopic, TOPICS.summary, TOPICS.site, TOPICS.serverOnline], { qos: 1 });
       this.mq.publish(onlineTopic, "online", { qos: 1, retain: true });
       this.setConnected(true);
     });
     this.mq.on("close", () => this.setConnected(false));
     this.mq.on("offline", () => this.setConnected(false));
     this.mq.on("message", (topic, payload) => {
+      const text = decoder.decode(payload);
+      if (topic === TOPICS.serverOnline) {      // 일반 문자열 "online"/"offline"
+        this.serverOnline = text.trim() === "online";
+        this.emitStatus();
+        return;
+      }
       let msg: Msg;
       try {
-        msg = JSON.parse(decoder.decode(payload));
+        msg = JSON.parse(text);
       } catch {
         return;
       }
       if (topic === TOPICS.summary) {
         this.lastSummary = msg;
         this.summaryFns.forEach((fn) => fn(msg));
+        return;
+      }
+      if (topic === TOPICS.site) {
+        this.lastSite = msg as SiteMessage;
+        this.siteFns.forEach((fn) => fn(msg as SiteMessage));
         return;
       }
       if (topic !== resTopic) return;
@@ -60,6 +75,11 @@ export class LockerClient {
         this.pushFns.forEach((fn) => fn(msg));
       }
     });
+  }
+
+  /** 브로커에 연결되어 있고 보관소 서버가 꺼져 있다고 알려지지 않았으면 true */
+  get ready() {
+    return this.connected && this.serverOnline !== false;
   }
 
   request(topic: string, body: Msg, timeoutMs = 6000): Promise<Msg> {
@@ -81,9 +101,9 @@ export class LockerClient {
     return () => void this.pushFns.delete(fn);
   }
 
-  onStatus(fn: (connected: boolean) => void) {
+  onStatus(fn: (ready: boolean) => void) {
     this.statusFns.add(fn);
-    fn(this.connected);
+    fn(this.ready);
     return () => void this.statusFns.delete(fn);
   }
 
@@ -91,6 +111,12 @@ export class LockerClient {
     this.summaryFns.add(fn);
     if (this.lastSummary) fn(this.lastSummary);
     return () => void this.summaryFns.delete(fn);
+  }
+
+  onSite(fn: (m: SiteMessage) => void) {
+    this.siteFns.add(fn);
+    if (this.lastSite) fn(this.lastSite);
+    return () => void this.siteFns.delete(fn);
   }
 
   end() {
@@ -105,6 +131,10 @@ export class LockerClient {
   private setConnected(value: boolean) {
     if (this.connected === value) return;
     this.connected = value;
-    this.statusFns.forEach((fn) => fn(value));
+    this.emitStatus();
+  }
+
+  private emitStatus() {
+    this.statusFns.forEach((fn) => fn(this.ready));
   }
 }

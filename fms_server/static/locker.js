@@ -25,7 +25,7 @@ async function loadLocations() {
 }
 function addMapping(key='', target='') {
   const row=document.createElement('tr'), keyCell=document.createElement('td'), targetCell=document.createElement('td'), actions=document.createElement('td');
-  const input=document.createElement('input');input.value=key;input.placeholder='101-412';input.pattern='[0-9]+-[0-9]+';input.required=true;input.setAttribute('aria-label','세대 동-호');keyCell.append(input);
+  const input=document.createElement('input');input.value=key;input.placeholder='1-305';input.pattern='[0-9]+-[0-9]+';input.required=true;input.setAttribute('aria-label','세대 건물-호실');keyCell.append(input);
   const select=document.createElement('select');select.required=true;select.setAttribute('aria-label','세대 목적지');locationOptions(select,target);targetCell.append(select);
   const remove=document.createElement('button');remove.type='button';remove.textContent='제거';remove.onclick=()=>row.remove();actions.append(remove);
   row.append(keyCell,targetCell,actions);$('mappings').append(row);

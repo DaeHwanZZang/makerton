@@ -64,6 +64,9 @@ def delivery_progress(d: dict, jobs, cargo) -> dict:
     canceled = d["phase"] == "canceled"
     # 배정 대기인데 사유가 있으면(세대 연결 없음 등) 운영자 확인이 필요하다. 설정을 고치거나 배송을 취소한다.
     attention = d["phase"] == "queued" and bool(d.get("error"))
+    # 보관소가 적재 전에 취소했다 (JOB_CANCELLED). 적재·하차·반납 단계는 건너뛰고 도킹만 한다.
+    aborted = bool(d.get("locker_cancel")) and not d.get("bundle_id") and d["phase"] != "canceled"
+    aborted_note = f"보관소 취소: {d.get('locker_cancel')}"
     child = None
     if d.get("child_id"):
         try:
@@ -99,8 +102,9 @@ def delivery_progress(d: dict, jobs, cargo) -> dict:
     add("to_pickup", "픽업 지점 이동",
         "done" if rank > PHASES.index("to_pickup") else "active" if phase == "to_pickup" else "pending",
         d.get("pickup_name"), "to_pickup")
-    add("bundle", "최종 묶음 확정", "done" if bundle else "active" if phase == "awaiting_bundle" else "pending",
-        f'{bundle["bundle_id"][:14]}…' if bundle else "물품 2개 확인 대기", "loading")
+    add("bundle", "최종 묶음 확정",
+        "canceled" if aborted else "done" if bundle else "active" if phase == "awaiting_bundle" else "pending",
+        aborted_note if aborted else f'{bundle["bundle_id"][:14]}…' if bundle else "물품 2개 확인 대기", "loading")
 
     if bundle:
         by_tray = sorted(bundle["items"], key=lambda i: i["tray_id"])
@@ -121,29 +125,37 @@ def delivery_progress(d: dict, jobs, cargo) -> dict:
                 add(f"drop:{pid}", f"하차 {tray}", status_of_parcel(pid, ("delivered",)),
                     f"{pid[:10]}… · {stop['household']}", f"delivering:{i}")
     else:
-        # 확정 전: 예상 목록으로 같은 모양을 그린다.
+        # 확정 전: 예상 목록으로 같은 모양을 그린다. 방문 순서 = 트레이 순서.
         proposed = d.get("proposed_items") or []
+        rank = {"TRAY_A": 0, "TRAY_B": 1}
+        proposed = [it for _, it in sorted(enumerate(proposed),
+                                           key=lambda p: (rank.get(p[1].get("tray"), 2), p[0]))]
+        status, detail = ("canceled", "적재 안 함") if aborted else ("pending", "예상")
         for n in range(max(len(proposed), 2)):
-            add(f"pick:{n}", f"트레이 적재 {n + 1}", "pending", "예상")
-        households = sorted({f"{it['dong']}-{it['ho']}" for it in proposed})
+            add(f"pick:{n}", f"트레이 적재 {n + 1}", status, detail)
+        households = list(dict.fromkeys(f"{it['dong']}-{it['ho']}" for it in proposed))
         for i, household in enumerate(households):
-            add(f"move:{i}", f"{household} 이동", "pending", "예상")
+            add(f"move:{i}", f"{household} 이동", status, detail)
             for it in [it for it in proposed if f"{it['dong']}-{it['ho']}" == household]:
-                add(f"drop:{it['receipt_no']}", "하차", "pending", f"{it['receipt_no']} · 예상")
+                add(f"drop:{it['receipt_no']}", "하차", status, f"{it['receipt_no']} · {detail}")
 
     returned = [t for t in (d.get("return_trays") or []) if trays.get(t, {}).get("state") == "none"]
     returning_now = any(t.get("state") == "returning" for t in trays.values())
     uncertain = phase == "returning" and any(t.get("state") == "unknown" for t in trays.values())
     returned_all = d["phase"] in ("docking", "done")   # 트레이 반납 완료 (도킹 중이거나 끝남)
     at_return = returned_all or returning_now or bool(returned) or uncertain   # 반납 액션이 시작됐으면 도착한 것
-    add("return_move", "반납 지점 이동",
-        "done" if at_return else "active" if phase == "returning" else "pending",
-        d.get("return_name"), "returning")
     total_return = len(d.get("return_trays") or []) or len(trays) or 2
-    add("return", "트레이 반납",
-        "done" if returned_all else "active" if returning_now or returned
-        else "unknown" if uncertain else "pending",
-        f"{len(returned) if not returned_all else total_return}/{total_return}", "returning")
+    if aborted:
+        add("return_move", "반납 지점 이동", "canceled", "반납할 트레이 없음", "returning")
+        add("return", "트레이 반납", "canceled", "반납할 트레이 없음", "returning")
+    else:
+        add("return_move", "반납 지점 이동",
+            "done" if at_return else "active" if phase == "returning" else "pending",
+            d.get("return_name"), "returning")
+        add("return", "트레이 반납",
+            "done" if returned_all else "active" if returning_now or returned
+            else "unknown" if uncertain else "pending",
+            f"{len(returned) if not returned_all else total_return}/{total_return}", "returning")
     # 반납 뒤 충전 스테이션 도킹까지가 한 배송이다. 도킹하지 못해도(빈 충전소 없음·실패) 배송은 끝난다.
     note = d.get("dock_note")
     add("dock", "충전 스테이션 도킹",

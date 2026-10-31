@@ -78,5 +78,31 @@ export const IconArrowDown = ({ size = 28 }: P) => (
   </svg>
 );
 
-export const sizeIcon = (key: string, size?: number) =>
-  key === "S" ? <IconSizeS size={size} /> : key === "M" ? <IconSizeM size={size} /> : <IconSizeL size={size} />;
+export const IconOversize = ({ size = 32 }: P) => (
+  <svg {...base(size)}>
+    <rect x="2.5" y="6" width="19" height="13" rx="1" />
+    <path d="M2.5 10h19M9 6v4M15 6v4" />
+    <path d="M6 3.5h4M14 3.5h4" strokeDasharray="1.5 1.5" />
+  </svg>
+);
+
+export const IconFragile = ({ size = 28 }: P) => (
+  <svg {...base(size)}>
+    <path d="M7 3h10l-1 6a4 4 0 0 1-8 0L7 3Z" />
+    <path d="M12 13v7M8.5 20.5h7M11 3l1.5 3-2 2" />
+  </svg>
+);
+
+export const IconDoor = ({ size = 28 }: P) => (
+  <svg {...base(size)}>
+    <rect x="5" y="3" width="14" height="18" rx="1" />
+    <path d="M15 12h.01" strokeWidth={2.6} />
+  </svg>
+);
+
+export const IconSettings = ({ size = 28 }: P) => (
+  <svg {...base(size)}>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" />
+  </svg>
+);

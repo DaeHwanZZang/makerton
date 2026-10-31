@@ -316,6 +316,76 @@ def test_duplicate_confirmation_and_cancel_empty_load(env):
     assert 'R1' not in coord._reservations
 
 
+def test_visit_order_follows_tray_order_not_household_sort(env):
+    bridge, coord, jobs, mqtt, fleet, state, _ = env
+    d = request(bridge)
+    finish(env)
+    # 보관소가 101-102 를 먼저 들르도록 TRAY_A 에 실었다. 세대 문자열 순서(101-101 먼저)를 따르지 않는다.
+    # v4 추가 필드(building·unit·building_name·floor)는 받기만 한다.
+    v4 = [{'receipt_no': 'p1', 'dong': 101, 'ho': 101, 'building': 101, 'unit': 101, 'building_name': '101동',
+           'floor': 1, 'tray': 'TRAY_B'},
+          {'receipt_no': 'p2', 'dong': 101, 'ho': 102, 'building': 101, 'unit': 102, 'building_name': '101동',
+           'floor': 1, 'tray': 'TRAY_A'}]
+    bridge.receive({'type': 'BUNDLE_CONFIRMED', 'job_id': 'J1', 'robot_id': 'R1', 'items': v4,
+                    'summary': {'kind': 'RESERVED', 'slot_start': '2026-11-01T15:00:00+09:00'}})
+    bridge.tick()
+    assert [s['household'] for s in d['stops']] == ['101-102', '101-101']
+    finish(env)
+    bridge.tick()
+    tray = {i['tray_id']: i['parcel_id'] for i in bridge.cargo.bundle(d['bundle_id'])['items']}
+    assert payloads(mqtt.orders[-1]) == [('DROP', tray['TRAY_A'])]
+    assert mqtt.orders[-1].nodes[0].position.x == 4      # home2 (101-102)
+    steps = bridge.snapshot()['deliveries'][0]['progress']['steps']
+    assert [s['label'] for s in steps if s['key'].startswith('move:')] == ['101-102 이동', '101-101 이동']
+
+
+def test_locker_cancel_before_robot_assignment_ends_quietly(env):
+    bridge, coord, jobs, mqtt, fleet, state, _ = env
+    bridge.receive({'type': 'DELIVERY_JOB', 'job_id': 'J1',
+                    'items': [{'receipt_no': 'p1', 'dong': 109, 'ho': 101, 'tray': 'TRAY_A'},
+                              {'receipt_no': 'p2', 'dong': 101, 'ho': 101, 'tray': 'TRAY_B'}]})
+    bridge.tick()
+    d = bridge.deliveries['J1']
+    assert d['phase'] == 'queued' and d['error']               # 109-101 연결 없음 → 확인 필요
+    sent = len(mqtt.events)
+    bridge.receive({'type': 'JOB_CANCELLED', 'job_id': 'J1', 'reason': 'EMPTIED'})
+    bridge.tick()
+    assert d['phase'] == 'canceled' and d['robot_id'] is None
+    assert d['error'] == '보관소 취소: EMPTIED'
+    assert len(mqtt.events) == sent                             # JOB_REJECTED 를 보내지 않는다
+    bridge.receive({'type': 'DELIVERY_JOB', 'job_id': 'J1', 'items': items('p1', 'p2')})
+    assert len(mqtt.events) == sent
+    progress = bridge.snapshot()['deliveries'][0]['progress']
+    assert progress['status'] == 'canceled' and progress['current'] == '배송 취소'
+    with pytest.raises(JobError):
+        bridge.cancel_queued('J1')                              # 이미 끝난 배송
+
+
+def test_locker_cancel_while_moving_to_pickup_cancels_move_and_docks(dock_env):
+    bridge, coord, jobs, mqtt, fleet, state = dock_env[:6]
+    d = request(bridge)
+    assert d['phase'] == 'to_pickup' and d['child_id']
+    move = jobs.get(d['child_id'])
+    bridge.receive({'type': 'JOB_CANCELLED', 'job_id': 'J1', 'reason': 'EMPTIED'})
+    bridge.tick()
+    assert jobs.get(move.job_id).status.value in ('canceling', 'canceled')
+    assert d['phase'] == 'docking' and d['locker_cancel'] == 'EMPTIED'
+    progress = bridge.snapshot()['deliveries'][0]['progress']
+    status = {s['key']: s['status'] for s in progress['steps']}
+    assert status['bundle'] == status['pick:0'] == status['return'] == 'canceled'
+    assert status['dock'] == 'active'
+    # 로봇이 이동 오더 취소를 보고하면 도킹 오더가 나간다.
+    fleet.apply_state(state.model_copy(update={'order_id': None}))
+    for _ in range(3):
+        bridge.tick()
+    dock = jobs.get(d['child_id'])
+    assert dock.job_id != move.job_id and dock.commands[0].kind == 'docking'
+    assert dock.commands[0].target.startswith('charger-')
+    # 픽업 지점 도착 뒤에 늦게 온 취소·적재 후 취소는 무시한다.
+    bridge.receive({'type': 'JOB_CANCELLED', 'job_id': 'J1', 'reason': 'EMPTIED'})
+    assert d['phase'] == 'docking'
+
+
 def test_wrong_robot_confirmation_is_rejected(env):
     bridge, *_ = env
     request(bridge)
