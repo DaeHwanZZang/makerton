@@ -70,6 +70,7 @@ ODOM_COLOR = "#ffd60a"     # 보정 전 순수 오도메트리 표시 색
 # 관여 안 한다 — 그쪽은 fms_server 가 grid 에 구워서 각 로봇이 직접 받는다)
 ZONE_COLORS = {
     "prohibit": QColor(255, 59, 48),   # 진입 금지 — 빨강
+    "occupancy": QColor(89, 200, 190),  # 한 대씩 통과하는 점유 존
     "elevator": QColor(171, 154, 238), # 엘리베이터 구역 — 보라 (표시 전용)
     "slow": QColor(255, 159, 10),      # 감속 구역 — 주황
     "oneway": QColor(10, 132, 255),    # 일방통행 — 파랑

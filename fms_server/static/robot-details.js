@@ -24,7 +24,9 @@ window.robotDetails = (()=>{
     const task=el('section',undefined,'rd-task');
     const taskLabel=el('div','현재 작업','rd-label'),taskTitle=el('div',undefined,'rd-task-title'),taskStep=el('p');
     const progress=el('progress');progress.setAttribute('aria-label','작업 단계 진행률');
-    task.append(taskLabel,taskTitle,taskStep,progress);
+    // 보관소 배송은 하위 작업 여러 개를 배송 1건(픽업→하차→트레이 반납)으로 묶어 보여준다.
+    const deliveryButton=el('button','진행 상세','rd-delivery-button');deliveryButton.type='button';deliveryButton.hidden=true;
+    task.append(taskLabel,taskTitle,taskStep,progress,deliveryButton);
     // 직사각형 적재부를 둘로 나눈 두 트레이. FMS 장부(액션 완료 보고 기준)의 값이다.
     const cargo=el('section',undefined,'rd-cargo');cargo.setAttribute('aria-label','적재 트레이');
     const facts=el('dl',undefined,'rd-facts');
@@ -39,7 +41,7 @@ window.robotDetails = (()=>{
     root.append(header,status,notice,battery,task,cargo,facts,errors,diagnostics,updated);
     container.replaceChildren(root);
     const card={root,name,connection,status,notice,charge,chargeState,batteryTrack,batteryFill,
-      taskTitle,taskStep,progress,mode,localization,speed,errors,diagnostics,cargo,cargoKey:null,
+      taskTitle,taskStep,progress,deliveryButton,taskLabel,mode,localization,speed,errors,diagnostics,cargo,cargoKey:null,
       x,y,heading,map,sync,version,score,size,order,updated,errorKey:null};
     cards.set(container,card);return card;
   }
@@ -78,11 +80,25 @@ window.robotDetails = (()=>{
     c.batteryTrack.dataset.low=charge!==null&&charge<=20?'true':'false';
     c.batteryFill.style.width=`${charge??0}%`;
     if(charge===null)c.batteryTrack.removeAttribute('aria-valuenow');else c.batteryTrack.setAttribute('aria-valuenow',charge);
-    const total=job?.commands?.length||0,done=Math.max(0,Math.min(total,job?.done_commands||0));
-    set(c.taskTitle,job?.preset_name||job?.job_id||(s?.order_id?'외부 작업':'실행 중인 작업 없음'));
-    set(c.taskStep,job?job.status==='assigned'?'로봇 수신 확인 대기':job.status==='canceling'?'작업 취소 확인 중':`${done} / ${total}단계 완료 · ${describe(job.commands?.[done])}`:s?.order_id||'');
-    c.taskStep.hidden=!job&&!s?.order_id;
-    c.progress.hidden=!total;c.progress.max=total||1;c.progress.value=done;
+    const delivery=window.deliveryUI?.forRobot(robot.robot_id,job);
+    if(delivery){
+      const p=delivery.progress||{};
+      set(c.taskLabel,p.status==='blocked'?'현재 작업 · 확인 필요':'현재 작업 · 보관소 배송');
+      set(c.taskTitle,`배송 ${delivery.job_id} · ${p.done}/${p.total}단계`);
+      set(c.taskStep,[p.current,p.current_detail].filter(Boolean).join(' · '));
+      c.taskStep.hidden=false;
+      c.progress.hidden=false;c.progress.max=p.total||1;c.progress.value=p.done||0;
+      c.deliveryButton.hidden=false;c.deliveryButton.onclick=()=>window.deliveryUI.open(delivery.job_id);
+      c.root.dataset.delivery=p.status||'';
+    }else{
+      const total=job?.commands?.length||0,done=Math.max(0,Math.min(total,job?.done_commands||0));
+      set(c.taskLabel,'현재 작업');
+      set(c.taskTitle,job?.preset_name||job?.job_id||(s?.order_id?'외부 작업':'실행 중인 작업 없음'));
+      set(c.taskStep,job?job.status==='assigned'?'로봇 수신 확인 대기':job.status==='canceling'?'작업 취소 확인 중':`${done} / ${total}단계 완료 · ${describe(job.commands?.[done])}`:s?.order_id||'');
+      c.taskStep.hidden=!job&&!s?.order_id;
+      c.progress.hidden=!total;c.progress.max=total||1;c.progress.value=done;
+      c.deliveryButton.hidden=true;delete c.root.dataset.delivery;
+    }
     set(c.mode,s?.mode==='AUTO'?'자동':s?.mode==='MANUAL'?'수동':'—');
     set(c.localization,({LOCALIZED:'정상',LOCALIZING:'확인 중',UNLOCALIZED:'미확정'})[s?.localization]||'—');
     set(c.speed,number(s?.velocity,2,' m/s'));
@@ -113,7 +129,7 @@ window.robotDetails = (()=>{
       set(c.updated,`마지막 수신 ${ago} · ${new Date(robot.last_state_at*1000).toLocaleTimeString('ko-KR')}`);
     }else set(c.updated,'상태 수신 이력 없음');
   }
-  const trayStates={empty:'비어 있음',reserved:'적재 예정',loading:'적재 중',occupied:'적재됨',unloading:'하차 중',unknown:'확인 필요'};
+  const trayStates={none:'트레이 없음',reserved:'적재 예정',loading:'적재 중',loaded:'적재됨',unloading:'하차 중',empty_tray:'빈 트레이',returning:'반납 중',unknown:'확인 필요'};
   function renderCargo(c,cargo){
     const key=JSON.stringify(cargo||null);
     if(key===c.cargoKey)return;
@@ -129,6 +145,7 @@ window.robotDetails = (()=>{
       grid.append(box);
     }
     c.cargo.append(grid);
+    if(cargo.trays.some(t=>t.state==='empty_tray')&&cargo.trays.every(t=>['empty_tray','none','returning'].includes(t.state)))c.cargo.append(el('p','빈 트레이는 픽업스테이션 반납 지점에 내려놓아야 다음 배송을 받습니다.','muted'));
     if(cargo.trays.some(t=>t.state==='unknown'))c.cargo.append(el('p','확인 필요한 물품이 있습니다. 보관소 배송 화면에서 실물을 대조하세요.','rd-notice'));
   }
   return {render};

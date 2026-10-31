@@ -28,7 +28,7 @@
 | `locker/storage/log` | 서버 → 전체 | 가상 보관소 크레인 동작 로그 (`STORE`/`RETRIEVE`/`MOVE`) |
 | `locker/robot/job` | 서버 → FMS | `DELIVERY_JOB` |
 | `locker/robot/bundle` | 서버 → FMS | `BUNDLE_CONFIRMED`, `JOB_CANCELLED` |
-| `locker/robot/event` | FMS → 서버 | `ROBOT_ARRIVED`, `DELIVERY_RESULT`, `JOB_DONE` |
+| `locker/robot/event` | FMS → 서버 | `ROBOT_ARRIVED`, `DELIVERY_RESULT`, `JOB_DONE`, `JOB_REJECTED` |
 | `locker/client/{id}/online`, `locker/server/online` (retained) | 각 클라이언트(LWT) | `online` / `offline` |
 
 ## 2. 입력 키오스크
@@ -162,6 +162,7 @@ FMS  → ROBOT_ARRIVED       로봇이 보관소 출력구에 도착
 서버 → BUNDLE_CONFIRMED    도착 시점에 묶음을 다시 계산해 최종 확정 (또는 JOB_CANCELLED)
 FMS  → DELIVERY_RESULT     물품별 결과 (DELIVERED / FAILED)
 FMS  → JOB_DONE            로봇 복귀. 서버는 다음 Job 을 검사
+FMS  → JOB_REJECTED        로봇 배정 전 운영자 취소 (세대 목적지 연결 없음 등). 서버는 다음 Job 을 검사
 ```
 
 ```jsonc
@@ -181,6 +182,8 @@ FMS  → JOB_DONE            로봇 복귀. 서버는 다음 Job 을 검사
 { "type": "DELIVERY_RESULT", "job_id": "J20261031-0017", "receipt_no": "20261031-89B536F3",
   "result": "DELIVERED" }
 { "type": "JOB_DONE", "job_id": "J20261031-0017", "robot_id": "R1" }
+{ "type": "JOB_REJECTED", "job_id": "J20261031-0018", "reason": "운영자 취소: 세대 105-101 목적지 연결이 없다",
+  "unroutable": ["20261031-630EBBF4"] }
 ```
 - `DELIVERY_JOB` 은 `BUNDLE_CONFIRMED` 와 같은 형식(예상 묶음, `robot_id` 없음)입니다.
 - 로봇 적재부: 직사각형 로봇을 둘로 나눈 트레이 `TRAY_A`, `TRAY_B`. 트레이 하나에 물품 하나, 묶음은 정확히 2개다.
@@ -191,6 +194,10 @@ FMS  → JOB_DONE            로봇 복귀. 서버는 다음 Job 을 검사
   물품별 PICK·DROP 을 실행하고, 복귀 후 픽업스테이션에서 트레이 반납을 확인한다 (`fms_server/cargo.py`).
 - 배달 실패 물품은 재입고되고, 2회 실패하면 직접 수령(DIRECT)으로 바뀝니다.
 - `JOB_DONE` 때까지 결과가 오지 않은 물품은 실패로 처리합니다.
+- `JOB_REJECTED`는 로봇 배정 전(`PENDING`) Job 에만 적용합니다. Job 은 `CANCELLED`, 물품은 보관 셀에 그대로 `STORED`로 돌아갑니다.
+  `unroutable`(FMS 에 세대 목적지 연결이 없는 물품)은 직접 수령(DIRECT)으로 바꿔 같은 묶음이 다시 발행되어 멈추지 않게 하고,
+  나머지 물품으로 새 Job 을 검사합니다. 적재 확정(`CONFIRMED`) 뒤에 온 `JOB_REJECTED`는 무시합니다.
+  FMS 는 취소한 Job 의 `DELIVERY_JOB` 재통지를 받으면 같은 `JOB_REJECTED`를 다시 보냅니다.
 
 ## 6. 상태 요약 (retained)
 

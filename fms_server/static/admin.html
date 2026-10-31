@@ -4,9 +4,12 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FMS · 실시간 맵</title>
 <link rel="stylesheet" href="/static/fms.css">
+<script src="/static/delivery.js" defer></script>
 <script src="/static/robot-details.js" defer></script>
 <script src="/static/fms.js" defer></script>
+<script src="/static/zone-geometry.js" defer></script>
 <script src="/static/zone-editor.js" defer></script>
+<script src="/static/traffic.js" defer></script>
 <script src="/static/map-points.js" defer></script>
 <script src="/static/elevators.js" defer></script>
 <script src="/static/elevator-status.js" defer></script>
@@ -67,21 +70,36 @@
         <p id="zoneHint" role="status">맵에서 드래그해 사각형을 만드세요.</p>
         <form id="zoneForm">
           <label>구역 이름<input name="name" required maxlength="128" placeholder="구역 이름"></label>
-          <label id="zoneTypeLabel">구역 종류<select name="type"><option value="prohibit">주행금지구역 (Forbidden zone)</option><option value="elevator">엘리베이터 구역</option></select></label>
+          <label id="zoneTypeLabel">구역 종류<select name="type"><option value="prohibit">주행금지구역 (Forbidden zone)</option><option value="elevator">엘리베이터 구역</option><option value="occupancy">점유 존 (한 대씩 통과)</option></select></label>
           <div class="zone-dimensions">
-            <label>X (m)<input name="x" type="number" step="any" required></label>
-            <label>Y (m)<input name="y" type="number" step="any" required></label>
+            <label>기준 X (m)<input name="x" type="number" step="any" required title="회전 전 사각형의 왼쪽 위 X"></label>
+            <label>기준 Y (m)<input name="y" type="number" step="any" required title="회전 전 사각형의 왼쪽 위 Y"></label>
             <label>가로 (m)<input name="width" type="number" step="any" required min="0.001"></label>
             <label>세로 (m)<input name="height" type="number" step="any" required min="0.001"></label>
           </div>
+          <label>구역 회전 (°)<input name="rotation" type="number" step="any" value="0" required></label>
+          <fieldset id="trafficGateFields" hidden>
+            <legend>방향별 대기·출구 node</legend>
+            <p class="muted">목적지로 등록한 node를 선택하세요. 좌표를 존에 복사합니다. 대기·출구는 존 밖에 두고 서로의 통로를 막지 않도록 배치하세요.</p>
+            <div id="trafficGateRows"></div>
+            <button id="addTrafficGate" type="button">진입 방향 추가</button>
+          </fieldset>
           <fieldset id="pickupNodeFields" class="pickup-node" hidden>
-            <legend>픽업 지점 (node)</legend>
-            <div class="zone-buttons"><button id="pickupStepZone" type="button">구역 편집</button><button id="pickupStepNode" type="button">픽업 지점 지정</button></div>
+            <legend>픽업·반납 지점 (node)</legend>
+            <div class="zone-buttons"><button id="pickupStepZone" type="button">구역</button><button id="pickupStepNode" type="button">⇲ 픽업 지점</button><button id="pickupStepReturn" class="return" type="button">⇱ 반납 지점</button></div>
+            <p class="muted pickup-node-note">픽업: 물품 2개를 트레이에 싣는 곳. 반납: 배송 후 빈 트레이를 내려놓는 곳. 두 지점은 1 m 이상 떨어뜨리세요.</p>
+            <div class="pickup-node-title">⇲ 픽업 지점</div>
             <div class="zone-dimensions">
               <label>X (m)<input name="nodeX" type="number" step="any"></label>
               <label>Y (m)<input name="nodeY" type="number" step="any"></label>
             </div>
             <label>방향 (°)<input name="nodeHeading" type="number" step="any"></label>
+            <div class="pickup-node-title return">⇱ 반납 지점</div>
+            <div class="zone-dimensions">
+              <label>X (m)<input name="returnX" type="number" step="any"></label>
+              <label>Y (m)<input name="returnY" type="number" step="any"></label>
+            </div>
+            <label>방향 (°)<input name="returnHeading" type="number" step="any"></label>
           </fieldset>
           <p id="zoneDescription" class="muted">저장하면 새 맵 버전을 활성화하고 로봇에 전달합니다. 엘리베이터 구역은 위치 표시용입니다.</p>
           <div class="zone-buttons"><button id="saveZone" class="primary" disabled>구역 저장</button><button id="cancelZone" type="button">취소</button></div>
@@ -123,7 +141,7 @@
     <details class="panel"><summary>프리셋 없이 이동 작업 만들기</summary>
     <div class="panel"><h3>작업 만들기</h3><form id="jobForm"><label>로봇<select name="robot_id" id="jobRobot"></select></label><label>목적지<select name="target" id="jobTarget"></select></label><button type="button" id="addStep">경유지 추가</button><button class="primary">작업 생성</button></form><div id="jobSteps" class="muted">선택한 목적지로 이동합니다.</div></div>
     </details>
-    <div class="table-wrap"><table><thead><tr><th>작업 ID / 프리셋</th><th>상태</th><th>로봇</th><th>방문 순서</th><th>진행</th><th>오류</th><th>조작</th></tr></thead><tbody id="jobRows"></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>작업 ID / 프리셋</th><th>상태</th><th>로봇</th><th>방문 순서</th><th>진행</th><th>대기·오류</th><th>조작</th></tr></thead><tbody id="jobRows"></tbody></table></div>
   </section>
   <section id="page-presets" class="page content-page" hidden>
     <div class="page-heading"><div><h2>작업 프리셋</h2><p>이동·대기·도킹·주차 단계를 묶어 재사용합니다. 생성된 작업은 프리셋 수정의 영향을 받지 않습니다.</p></div></div>
@@ -152,7 +170,7 @@
   </section>
   <section id="page-locations" class="page content-page" hidden>
     <div class="page-heading"><div><h2>목적지·도킹</h2><p>목적지의 좌표와 방향을 관리합니다. 충전·주차 지점은 맵에서 별도 기호로 표시합니다.</p></div></div>
-    <div class="panel"><h3 id="locFormTitle">목적지 등록</h3><form id="locForm"><label>이름<input name="name" required placeholder="충전소-A"></label><label>맵<select name="map_id" class="map-options" required></select></label><label>X (m)<input name="x" type="number" step="any" required></label><label>Y (m)<input name="y" type="number" step="any" required></label><label>방향 (rad)<input name="theta" type="number" step="any" value="0" required></label><label>용도<select name="type"><option value="station">작업 지점</option><option value="charger">충전소</option><option value="parking">주차 지점</option><option value="waypoint">경유점</option><option value="other">기타</option><option value="pickup" disabled>픽업 지점 (맵의 ＋ 픽업스테이션)</option></select></label><button class="primary">저장</button><button type="button" id="cancelLocEdit" hidden>편집 취소</button></form></div>
+    <div class="panel"><h3 id="locFormTitle">목적지 등록</h3><form id="locForm"><label>이름<input name="name" required placeholder="충전소-A"></label><label>맵<select name="map_id" class="map-options" required></select></label><label>X (m)<input name="x" type="number" step="any" required></label><label>Y (m)<input name="y" type="number" step="any" required></label><label>방향 (rad)<input name="theta" type="number" step="any" value="0" required></label><label>용도<select name="type"><option value="station">작업 지점</option><option value="charger">충전소</option><option value="parking">주차 지점</option><option value="waypoint">경유점</option><option value="other">기타</option><option value="pickup" disabled>픽업 지점 (맵의 ＋ 픽업스테이션)</option><option value="tray_return" disabled>반납 지점 (맵의 ＋ 픽업스테이션)</option></select></label><button class="primary">저장</button><button type="button" id="cancelLocEdit" hidden>편집 취소</button></form></div>
     <h3>등록한 목적지</h3><div class="table-wrap"><table><thead><tr><th>이름</th><th>맵</th><th>용도</th><th>X / Y / 방향</th><th></th></tr></thead><tbody id="locationRows"></tbody></table></div>
     <h3>맵에 포함된 위치</h3><p class="muted">선택한 맵 버전의 원본 위치입니다. 작업 목적지로 쓰려면 가져오기를 누르세요.</p><div class="table-wrap"><table><thead><tr><th>이름</th><th>용도</th><th>X / Y / 방향</th><th></th></tr></thead><tbody id="annotationRows"></tbody></table></div>
   </section>
@@ -167,6 +185,12 @@
   </section>
   <section id="page-settings" class="page content-page" hidden>
     <div class="page-heading"><div><h2>현장 설정</h2><p>현장을 등록하고 서버 연결 상태를 확인합니다.</p></div></div>
+    <div class="panel"><h3>선택 맵 교통 제어</h3>
+      <p id="trafficMapName" class="muted">상단에서 현장과 맵을 선택하세요.</p>
+      <form id="trafficForm"><label>동시 이동 허가 대수<input id="trafficLimit" type="number" min="1" step="1" placeholder="빈칸: 무제한"></label><button class="primary">적용</button></form>
+      <p class="muted">작업 없는 주차·충전 로봇은 제외합니다. 실행 중 일시정지·점유 존 대기·액션은 허가를 유지합니다.</p>
+      <div id="trafficStatus" role="status"></div>
+    </div>
     <div class="panel"><h3>현장 등록</h3><form id="siteForm"><label>현장 ID<input name="site_id" placeholder="hq" required></label><label>현장 이름<input name="name" placeholder="본사" required></label><button class="primary">현장 등록</button></form></div>
     <div class="table-wrap"><table><thead><tr><th>현장</th><th>ID</th><th>맵</th><th>로봇</th><th></th></tr></thead><tbody id="siteRows"></tbody></table></div>
     <div class="panel"><h3>서버 상태</h3><p id="healthDetail">확인 중</p><details><summary>최근 알림</summary><div id="log"></div></details></div>

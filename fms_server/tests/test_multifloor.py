@@ -120,6 +120,22 @@ def test_geometry_entry_theta_override_and_closed_error():
         stop_geometry(ZONE, Grid(blocked="NSEW"))
 
 
+@pytest.mark.parametrize('entry_theta',[None,3.141592653589793/6])
+def test_rotated_elevator_uses_its_actual_door_side(entry_theta):
+    import math
+    from common.map_annotations import rectangle_polygon
+    angle = math.pi/6
+    class RotatedGrid:
+        def is_free(self,x,y):
+            dx,dy = x-4,y-3
+            return Grid(blocked='NSE').is_free(4+math.cos(angle)*dx+math.sin(angle)*dy,
+                                               3-math.sin(angle)*dx+math.cos(angle)*dy)
+    zone = SimpleNamespace(polygon=rectangle_polygon(3,2,2,2,30))
+    g = stop_geometry(zone,RotatedGrid(),entry_theta=entry_theta)
+    assert g.distance == pytest.approx(1.5)
+    assert g.outside == pytest.approx((4-1.5*math.cos(angle),3-1.5*math.sin(angle),angle))
+
+
 # --- 다층 job -------------------------------------------------------------
 
 class FakeMqtt:
@@ -222,7 +238,11 @@ def finish_order(env, map_id="f1"):
     return oid
 
 
-def test_multifloor_ride_full_cycle(env):
+@pytest.mark.parametrize('traffic_limits',[False,True])
+def test_multifloor_ride_full_cycle(env, traffic_limits):
+    if traffic_limits:
+        env.coord.traffic.set_limit('s','f1',1)
+        env.coord.traffic.set_limit('s','f3',1)
     job = env.jobs.create("s", [{"type": "move", "target": "dest3"}])
     env.coord.dispatch(job.job_id, "AMR-001")
     assert [s["t"] for s in job.plan] == [
@@ -246,9 +266,14 @@ def test_multifloor_ride_full_cycle(env):
     assert job.stage == 2
     act = env.mqtt.orders[-1].nodes[0].action
     assert act.action_type.value == "STRAIGHT" and act.params["distance"] == pytest.approx(1.5)
+    assert act.params["speed"] == pytest.approx(0.6)          # 승강기 탑승 속도
     finish_order(env)
     # 4) 층 이동: GO + 출발 층 hold 해제. 맵은 아직 안 바꾼다
     assert ("go", "elev-A", "f3") in env.ctl.log and ("release", "elev-A") in env.ctl.log
+    if traffic_limits:
+        env.coord.tick_traffic()
+        assert 'floor:s/f1:AMR-001' not in env.coord.traffic.data['leases']
+        assert env.coord.traffic.data['leases']['floor:s/f3:AMR-001']['future']
     assert env.registry.assignment_for("AMR-001").map_id == "f1"
     env.ctl.set_car("elev-A", None, P.DOOR_CLOSED, moving=True)
     env.coord.tick_multifloor()
@@ -260,6 +285,7 @@ def test_multifloor_ride_full_cycle(env):
     out = env.mqtt.orders[-1]
     assert out.nodes[0].position.x == pytest.approx(4.0)
     assert out.nodes[0].action.params["distance"] == pytest.approx(-1.5)
+    assert out.nodes[0].action.params["speed"] == pytest.approx(0.6)   # 승강기 하차 속도
     oid = out.order_id
     env.robot("f1", RobotState.BUSY, order_id=oid)
     env.robot("f1", x=5.52, y=3.03)  # 하차 끝 (승강장 앞 5.5,3 에서 2 cm 오차)
@@ -289,6 +315,32 @@ def test_multifloor_ride_full_cycle(env):
     assert (last.nodes[0].position.x, last.nodes[0].position.y) == (8.0, 6.0)
     finish_order(env, "f3")
     assert job.status == JobStatus.SUCCESS and job.done_commands == 1
+    assert not env.coord.traffic.data['leases']
+
+
+def test_destination_capacity_reserved_before_boarding_and_cancel_releases(env):
+    env.coord.traffic.set_limit('s','f3',1)
+    env.ctl.set_car('elev-A','f1',P.DOOR_CLOSED)
+    env.registry.register_robot('s','AMR-002','f3')
+    busy = make_state('AMR-002',RobotState.BUSY,order_id='external',
+                      map_id=env.store.map_uid('f3'),map_version=env.store.active_version('f3'))
+    env.fleet.apply_state(busy)
+    job = env.jobs.create('s',[{'type':'move','target':'dest3'}])
+    env.coord.dispatch(job.job_id,'AMR-001')
+    finish_order(env)
+    assert job.stage == 1
+    assert not env.ctl.log  # 도착 층 정원이 없으면 승강기도 잡지 않는다.
+    assert '탑승 전 대기' in job.error
+    env.fleet.apply_state(busy.model_copy(update={'timestamp':time.time(),'state':RobotState.IDLE,
+                                                 'sub_state':None,'order_id':None}))
+    env.coord.tick_multifloor()
+    leases = env.coord.traffic.data['leases']
+    assert leases['floor:s/f3:AMR-001']['future']
+    assert ('call','elev-A','f1') in env.ctl.log
+    env.coord.cancel(job.job_id)
+    env.robot()
+    assert job.status == JobStatus.CANCELED
+    assert not env.coord.traffic.data['leases']
 
 
 def test_nearest_elevator_by_driving_distance(env, tmp_path):

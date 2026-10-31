@@ -32,6 +32,7 @@ from fms_server.api.locations import router as locations_router
 from fms_server.api.robots import router as robots_router
 from fms_server.api.sites import router as sites_router
 from fms_server.api.zones import router as zones_router
+from fms_server.api.traffic import router as traffic_router
 from fms_server.api.map_points import router as map_points_router
 from fms_server.api.pickup_stations import router as pickup_stations_router
 from fms_server.api.cargo import router as cargo_router
@@ -128,6 +129,7 @@ app.include_router(locations_router)
 app.include_router(jobs_router)
 app.include_router(presets_router)
 app.include_router(zones_router)
+app.include_router(traffic_router)
 app.include_router(map_points_router)
 app.include_router(pickup_stations_router)
 app.include_router(cargo_router)

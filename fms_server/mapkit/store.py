@@ -406,11 +406,18 @@ class MapStore:
             if zone is not None:
                 m = model.metadata
                 xs, ys = [p.x for p in zone.polygon], [p.y for p in zone.polygon]
-                if (min(xs) < m.origin_x or min(ys) < m.origin_y
-                        or max(xs) > m.origin_x + m.width_m
-                        or max(ys) > m.origin_y + m.height_m):
+                eps = m.resolution * 1e-6
+                if (min(xs) < m.origin_x-eps or min(ys) < m.origin_y-eps
+                        or max(xs) > m.origin_x + m.width_m+eps
+                        or max(ys) > m.origin_y + m.height_m+eps):
                     raise MapStoreError("구역은 맵 범위 안에 있어야 합니다.")
-                if max(xs) - min(xs) < m.resolution or max(ys) - min(ys) < m.resolution:
+                from common.map_annotations import rectangle_frame
+                try:
+                    *_,half_width,half_height = rectangle_frame(zone.polygon)
+                    width,height = 2*half_width,2*half_height
+                except ValueError:
+                    width,height = max(xs)-min(xs),max(ys)-min(ys)
+                if min(width,height) < m.resolution-eps:
                     raise MapStoreError("구역의 가로·세로는 최소 1픽셀이어야 합니다.")
 
             source = self._version_dir(map_id, base_version) / SOURCE_DIR
@@ -420,7 +427,8 @@ class MapStore:
             # 기존 인제스트의 벤더 zone 입력을 재사용해 버전/번들 생성 경로를 통일한다.
             files[ingest.ZONE_META_NAME] = json.dumps({"zones": [
                 {"id": z.zone_id, "name": z.name, "type": z.type.value,
-                 "polygon": [[p.x, p.y] for p in z.polygon]} for z in zones
+                 "polygon": [[p.x, p.y] for p in z.polygon],
+                 "gates": [g.model_dump() for g in z.gates]} for z in zones
             ]}, ensure_ascii=False).encode("utf-8")
             return self.ingest_upload(
                 map_id, files, activate=activate,

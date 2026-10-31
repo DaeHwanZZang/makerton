@@ -2,9 +2,10 @@
 
     GET    /api/v1/sites/{site_id}/pickup-stations
     POST   /api/v1/sites/{site_id}/maps/{map_id}/pickup-stations
-           {base_version, name, zone:{x,y,width,height}, node:{x,y,theta}}
+           {base_version, name, zone:{x,y,width,height}, node:{x,y,theta}, return_node:{x,y,theta}}
     PUT    /api/v1/sites/{site_id}/maps/{map_id}/pickup-stations/{station_id}
-           {base_version, zone:{...}, node:{...}}   이름 변경은 목적지 이름 변경을 쓴다
+           {base_version, zone:{...}, node:{...}, return_node:{...}}   이름 변경은 목적지 이름 변경을 쓴다
+           반납 node 가 없는 스테이션(도입 전)은 PUT 으로 반납 node 를 추가한다.
     DELETE /api/v1/sites/{site_id}/maps/{map_id}/pickup-stations/{station_id}?base_version=
 """
 from __future__ import annotations
@@ -32,6 +33,7 @@ class ZoneRect(BaseModel):
     y: float
     width: float = Field(gt=0)
     height: float = Field(gt=0)
+    rotation: float = 0
 
 
 class NodePose(BaseModel):
@@ -45,7 +47,8 @@ class UpdateStationRequest(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     base_version: str = Field(min_length=1)
     zone: ZoneRect
-    node: NodePose
+    node: NodePose          # 픽업(트레이 적재) 지점
+    return_node: NodePose   # 반납(빈 트레이) 지점
 
 
 class CreateStationRequest(UpdateStationRequest):
@@ -72,7 +75,10 @@ def _reference_checker(request, site_id, statuses, station_id):
 
 def _call(request, site_id, map_id, fn):
     try:
-        result = fn()
+        with request.app.state.job_coordinator.lock:
+            from fms_server.api.traffic import ensure_editable
+            ensure_editable(request, site_id, map_id)
+            result = fn()
     except MapVersionConflict as exc:
         raise HTTPException(409, str(exc)) from None
     except PickupStationInUse as exc:
@@ -104,7 +110,8 @@ def create_pickup_station(site_id: str, map_id: str, body: CreateStationRequest,
     def run():
         maps, locations = _stores(request, site_id)
         return create_station(maps, locations, map_id, body.base_version, body.name,
-                              Rect(**body.zone.model_dump()), body.node.x, body.node.y, body.node.theta)
+                              Rect(**body.zone.model_dump()), body.node.x, body.node.y, body.node.theta,
+                              body.return_node.x, body.return_node.y, body.return_node.theta)
     return _call(request, site_id, map_id, run)
 
 
@@ -118,7 +125,8 @@ def update_pickup_station(site_id: str, map_id: str, station_id: str,
             # 생성된 작업은 좌표 스냅샷을 쓰지만, 그 로봇이 node 를 쓰는 동안 위치를 옮기지 않는다.
             return update_station(maps, locations, map_id, station_id, body.base_version,
                                   Rect(**body.zone.model_dump()), body.node.x, body.node.y,
-                                  body.node.theta,
+                                  body.node.theta, body.return_node.x, body.return_node.y,
+                                  body.return_node.theta,
                                   node_locked=_reference_checker(request, site_id, ACTIVE_JOB_STATUSES, station_id))
     return _call(request, site_id, map_id, run)
 

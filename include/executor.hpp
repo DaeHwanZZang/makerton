@@ -15,6 +15,7 @@
 #include "kinematics.hpp"
 #include "map_model.hpp"
 #include "path_refine.hpp"
+#include "planner.hpp"
 #include "physics_world.hpp"
 #include "recorder.hpp"
 #include "scan_matcher.hpp"
@@ -36,6 +37,7 @@ public:
     const MapModel* map = nullptr;  // 없으면 경로계획/충돌감지 꺼짐 (소유하지 않음)
     MapSync* map_sync = nullptr;    // 없으면 SET_MAP 은 로깅만 (소유하지 않음)
     PathRefineParams path_refine;   // enabled=false 가 기본 (A* 결과 그대로 사용)
+    CenterlineParams centerline;    // 복도 중앙 주행. enabled=true 가 기본 (--no-center-path 로 끔)
     std::unique_ptr<Recorder> recorder;  // 있으면 tick 마다 한 줄 기록 (--record)
     // 로컬라이징 (가상 라이다 + 스캔 매칭). 힌트를 받고 localize_time 초 뒤에 매칭 결과로 끝난다
     LidarParams lidar;
@@ -110,7 +112,7 @@ private:
     OperatingMode mode_ = OperatingMode::AUTO;
     std::vector<ErrorInfo> errors_;
 
-    // 경로 다듬기용 장애물 거리 장. 맵당 lazy 생성, set_map 에서 무효화.
+    // 복도 중앙 주행·경로 다듬기용 장애물 거리 장. 맵당 lazy 생성, set_map 에서 무효화.
     std::unique_ptr<ClearanceField> clearance_;
 
     // 로컬라이징 상태. UNLOCALIZED/LOCALIZING 이면 주행 억제 + 오더 거절 (motion_inhibited / can_accept_job)

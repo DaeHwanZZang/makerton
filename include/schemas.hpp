@@ -159,6 +159,7 @@ struct OrderNode {
     Pose position;
     std::optional<Action> action;
     std::optional<TimeWindow> reserved_window;
+    std::vector<std::string> allowed_zone_ids;
     static OrderNode from_json(cJSON* obj);
 };
 
@@ -186,6 +187,7 @@ struct State {
     long long header_id = 0;
     double timestamp = 0.0;
     std::string robot_id;
+    bool traffic_control = true;
 
     RobotState state = RobotState::IDLE;
     std::optional<BusySubState> sub_state;

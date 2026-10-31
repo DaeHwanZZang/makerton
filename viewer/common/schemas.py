@@ -290,6 +290,8 @@ class OrderNode(BaseModel):
         )
     )
     position: Pose
+    allowed_zone_ids: list[str] = Field(default_factory=list,
+        description="이 노드로 가는 구간에서 통과를 허가한 점유 존 ID")
     action: Optional[Action] = None
     reserved_window: Optional[TimeWindow] = None
 
@@ -393,6 +395,7 @@ class State(FmsMessage):
     """로봇 주기 상태 보고. FMS 가 아는 로봇의 유일한 진실."""
 
     state: RobotState
+    traffic_control: bool = Field(default=False, description="점유 존 경로 차단을 지원하는 클라이언트")
     sub_state: Optional[BusySubState] = Field(
         default=None, description="state == BUSY 일 때만 값이 있다. 그 외에는 반드시 None"
     )

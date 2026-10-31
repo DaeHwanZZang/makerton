@@ -15,6 +15,7 @@ from fms_server.pickup_stations import list_stations
 from fms_server.sites import SiteRegistry
 
 SITE = '/api/v1/sites/ps'
+RET = dict(x=2.5, y=-0.5, theta=0.0)        # 반납 node (픽업 node 와 1 m)
 BASE = SITE + '/maps/f1'
 
 
@@ -65,7 +66,7 @@ def _clear_site_records():
 def body(version, **changes):
     data = dict(base_version=version, name='보관소 A',
                 zone=dict(x=2, y=-1, width=1.5, height=1),
-                node=dict(x=2.5, y=0.5, theta=math.pi / 2))
+                node=dict(x=2.5, y=0.5, theta=math.pi / 2), return_node=RET)
     return data | changes
 
 
@@ -98,6 +99,23 @@ def test_create_links_zone_and_node_without_baking(env):
     assert len(listed[0]['zone']['polygon']) == 4
     loc_out = client.get(SITE + '/locations/' + '보관소 A').json()
     assert loc_out['zone_id'] == out['station_id']
+
+
+def test_pickup_zone_rotation_preserves_pickup_and_return_nodes(env):
+    client,registry,store,version,_ = env
+    out = create(client,version)
+    nodes = [(l.name,l.x,l.y,l.theta) for l in registry.location_store('ps').list()]
+    before = store.load_map_model('f1').classify_grid().copy()
+    data = body(out['version'],zone=dict(x=2,y=-1,width=1.5,height=1,rotation=30))
+    data.pop('name')
+    r = client.put(BASE+'/pickup-stations/'+out['station_id'],json=data)
+    assert r.status_code == 200,r.text
+    assert r.json()['map_changed']
+    z = store.load_annotations('f1').zone_by_id(out['station_id'])
+    a,b = z.polygon[:2]
+    assert math.atan2(b.y-a.y,b.x-a.x) == pytest.approx(math.pi/6)
+    assert [(l.name,l.x,l.y,l.theta) for l in registry.location_store('ps').list()] == nodes
+    assert (store.load_map_model('f1').classify_grid() == before).all()
 
 
 def test_node_outside_zone_is_allowed(env):
@@ -140,7 +158,7 @@ def test_update_node_only_keeps_map_version(env):
     notifications.clear()
     r = client.put(f"{BASE}/pickup-stations/{out['station_id']}", json={
         'base_version': out['version'], 'zone': dict(x=2, y=-1, width=1.5, height=1),
-        'node': dict(x=3, y=0.5, theta=0)})
+        'node': dict(x=3, y=0.5, theta=0), 'return_node': RET})
     assert r.status_code == 200, r.text
     assert r.json()['map_changed'] is False and r.json()['version'] == out['version']
     assert notifications == []
@@ -148,7 +166,7 @@ def test_update_node_only_keeps_map_version(env):
 
     r = client.put(f"{BASE}/pickup-stations/{out['station_id']}", json={
         'base_version': out['version'], 'zone': dict(x=2, y=-1.5, width=1, height=1),
-        'node': dict(x=3, y=0.5, theta=0)})
+        'node': dict(x=3, y=0.5, theta=0), 'return_node': RET})
     assert r.status_code == 200 and r.json()['map_changed'] is True
     assert notifications == [('ps', 'f1')]
     zone = store.load_annotations('f1').zone_by_id(out['station_id'])
@@ -220,12 +238,12 @@ def test_node_move_blocked_while_job_active(env):
     app.state.jobs.save(job)
     r = client.put(f"{BASE}/pickup-stations/{out['station_id']}", json={
         'base_version': out['version'], 'zone': dict(x=2, y=-1, width=1.5, height=1),
-        'node': dict(x=3, y=0.5, theta=0)})
+        'node': dict(x=3, y=0.5, theta=0), 'return_node': RET})
     assert r.status_code == 409
     # zone 만 바꾸는 것은 허용
     r = client.put(f"{BASE}/pickup-stations/{out['station_id']}", json={
         'base_version': out['version'], 'zone': dict(x=2, y=-1, width=2, height=1),
-        'node': dict(x=2.5, y=0.5, theta=math.pi / 2)})
+        'node': dict(x=2.5, y=0.5, theta=math.pi / 2), 'return_node': RET})
     assert r.status_code == 200, r.text
 
 
@@ -240,7 +258,7 @@ def test_broken_link_is_reported_and_cleanable(env):
     assert '픽업 구역' in stations[0].problems[0]
     v = store.active_version('f1')
     r = client.put(f'{BASE}/pickup-stations/{sid}', json={
-        'base_version': v, 'zone': dict(x=2, y=-1, width=1, height=1), 'node': dict(x=2.5, y=0.5)})
+        'base_version': v, 'zone': dict(x=2, y=-1, width=1, height=1), 'node': dict(x=2.5, y=0.5), 'return_node': RET})
     assert r.status_code == 422 and '손상' in r.json()['detail']
     r = client.delete(f'{BASE}/pickup-stations/{sid}', params={'base_version': v})
     assert r.status_code == 200, r.text
@@ -251,7 +269,7 @@ def test_broken_link_is_reported_and_cleanable(env):
 def test_unknown_station_404(env):
     client, _, _, version, _ = env
     r = client.put(f'{BASE}/pickup-stations/PS-none', json={
-        'base_version': version, 'zone': dict(x=2, y=-1, width=1, height=1), 'node': dict(x=2.5, y=0.5)})
+        'base_version': version, 'zone': dict(x=2, y=-1, width=1, height=1), 'node': dict(x=2.5, y=0.5), 'return_node': RET})
     assert r.status_code == 404
 
 
@@ -261,3 +279,96 @@ def test_pickup_zone_type_round_trips():
     ann = MapAnnotations.model_validate(data)
     assert ann.zones[0].type == ZoneType.PICKUP
     assert ann.prohibit_zones() == []
+
+
+def test_create_makes_return_node_linked_to_zone(env):
+    client, registry, store, version, _ = env
+    out = create(client, version)
+    ret = registry.location_store('ps').get('보관소 A 반납')
+    assert ret.type == LocationType.TRAY_RETURN.value and ret.zone_id == out['station_id']
+    assert (ret.x, ret.y) == (2.5, -0.5)
+    listed = client.get(SITE + '/pickup-stations').json()[0]
+    assert listed['return_name'] == '보관소 A 반납'
+    assert listed['return_node'] == {'x': 2.5, 'y': -0.5, 'theta': 0.0}
+
+
+@pytest.mark.parametrize('ret, message', [
+    (dict(x=50, y=0, theta=0), '반납 지점은 맵 범위'),
+    (dict(x=4.5, y=1.5, theta=0), '반납 지점이 주행 가능한 셀'),
+    (dict(x=2.56, y=0.56, theta=0), '같은 위치'),     # 픽업 node 와 같은 셀
+])
+def test_rejects_bad_return_node(env, ret, message):
+    client, registry, store, version, notifications = env
+    node = dict(x=2.55, y=0.55, theta=0)
+    r = client.post(BASE + '/pickup-stations', json=body(version, node=node, return_node=ret))
+    assert r.status_code == 422 and message in r.json()['detail']
+    assert store.active_version('f1') == version and registry.location_store('ps').list() == []
+
+
+def test_close_return_node_warns(env):
+    client, *_ , version, _ = env
+    out = create(client, version, return_node=dict(x=2.5, y=0.0, theta=0))
+    assert any('간격' in w for w in out['warnings'])
+
+
+def test_generic_apis_cannot_split_return_node(env):
+    client, registry, store, version, _ = env
+    create(client, version)
+    assert client.post(SITE + '/locations', json=dict(name='가짜 반납', map_id='f1', x=2, y=0,
+                                                      type='tray_return')).status_code == 422
+    assert client.delete(SITE + '/locations/' + '보관소 A 반납').status_code == 422
+    assert client.put(SITE + '/locations/' + '보관소 A 반납', json=dict(x=3)).status_code == 422
+    assert client.put(SITE + '/locations/' + '보관소 A 반납', json=dict(type='waypoint')).status_code == 422
+
+
+def test_rename_station_renames_return_node(env):
+    client, registry, store, version, _ = env
+    out = create(client, version)
+    r = client.put(SITE + '/locations/' + '보관소 A', json=dict(name='보관소 1'))
+    assert r.status_code == 200, r.text
+    listed = client.get(SITE + '/pickup-stations').json()
+    assert [(s['station_id'], s['name'], s['return_name'], s['status']) for s in listed] == [
+        (out['station_id'], '보관소 1', '보관소 1 반납', 'ok')]
+    # 새 반납 이름이 이미 쓰이면 이름 변경 자체를 거절한다.
+    client.post(SITE + '/locations', json=dict(name='보관소 2 반납', map_id='f1', x=1.5, y=1.5))
+    r = client.put(SITE + '/locations/' + '보관소 1', json=dict(name='보관소 2'))
+    assert r.status_code == 422 and '반납' in r.json()['detail']
+    assert registry.location_store('ps').get('보관소 1').zone_id == out['station_id']
+
+
+def test_station_without_return_node_is_broken_until_added(env):
+    client, registry, store, version, _ = env
+    out = create(client, version)
+    sid = out['station_id']
+    # 반납 node 도입 전 스테이션을 흉내낸다.
+    registry.location_store('ps').delete('보관소 A 반납', allow_pickup=True)
+    listed = client.get(SITE + '/pickup-stations').json()[0]
+    assert listed['status'] != 'ok' and '반납' in ' '.join(listed['problems'])
+    # 편집으로 반납 node 를 추가하면 정상이 된다 (zone 그대로면 맵 버전 유지).
+    r = client.put(f'{BASE}/pickup-stations/{sid}', json={
+        'base_version': out['version'], 'zone': dict(x=2, y=-1, width=1.5, height=1),
+        'node': dict(x=2.5, y=0.5, theta=math.pi / 2), 'return_node': dict(x=3.5, y=0.5, theta=0)})
+    assert r.status_code == 200, r.text
+    assert r.json()['map_changed'] is False
+    listed = client.get(SITE + '/pickup-stations').json()[0]
+    assert listed['status'] == 'ok' and listed['return_node']['x'] == 3.5
+
+
+def test_return_node_move_and_delete_removes_three(env):
+    client, registry, store, version, _ = env
+    out = create(client, version)
+    sid = out['station_id']
+    job = app.state.jobs.create('ps', [{'type': 'move', 'target': '보관소 A 반납'}])
+    job.status = type(job.status)('working')
+    app.state.jobs.save(job)
+    move = {'base_version': out['version'], 'zone': dict(x=2, y=-1, width=1.5, height=1),
+            'node': dict(x=2.5, y=0.5, theta=math.pi / 2), 'return_node': dict(x=3.5, y=0.5, theta=0)}
+    r = client.put(f'{BASE}/pickup-stations/{sid}', json=move)
+    assert r.status_code == 409 and '반납' in r.json()['detail']
+    job.status = type(job.status)('canceled')
+    app.state.jobs.save(job)
+    assert client.put(f'{BASE}/pickup-stations/{sid}', json=move).status_code == 200
+    assert registry.location_store('ps').get('보관소 A 반납').x == 3.5
+    r = client.delete(f'{BASE}/pickup-stations/{sid}', params={'base_version': out['version']})
+    assert r.status_code == 200, r.text
+    assert registry.location_store('ps').list() == []

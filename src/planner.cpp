@@ -1,7 +1,10 @@
 #include "planner.hpp"
 
+#include "path_refine.hpp"
+
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <map>
 #include <queue>
 #include <unordered_map>
@@ -109,7 +112,41 @@ std::vector<Px> simplify(const std::vector<Px>& path_px, const std::vector<uint8
     return result;
 }
 
-std::optional<std::vector<Px>> astar(Px start, Px goal, const std::vector<uint8_t>& grid, int w, int h) {
+// 시야가 트이고, 사이의 A* 점이 모두 선분에서 tol_px 안에 있을 때만 건너뛴다.
+// 복도 중앙을 따라 온 A* 경로를 벽 쪽으로 질러가지 않게 한다 (LOS 만 보면 팽창 경계를 스치는 지름길이 된다).
+double point_segment_dist(Px p, Px a, Px b) {
+    double vx = b.first - a.first, vy = b.second - a.second;
+    double wx = p.first - a.first, wy = p.second - a.second;
+    double len2 = vx * vx + vy * vy;
+    double t = len2 > 0 ? std::clamp((wx * vx + wy * vy) / len2, 0.0, 1.0) : 0.0;
+    return std::hypot(wx - t * vx, wy - t * vy);
+}
+
+std::vector<Px> simplify_within(const std::vector<Px>& path_px, const std::vector<uint8_t>& grid, int w, int h,
+                                double tol_px) {
+    if (path_px.size() <= 2) return path_px;
+    std::vector<Px> result = {path_px[0]};
+    size_t anchor = 0;
+    while (anchor < path_px.size() - 1) {
+        size_t best = anchor + 1;
+        for (size_t j = anchor + 2; j < path_px.size(); ++j) {
+            if (!line_of_sight(path_px[anchor], path_px[j], grid, w, h)) break;
+            bool close = true;
+            for (size_t k = anchor + 1; k < j && close; ++k)
+                close = point_segment_dist(path_px[k], path_px[anchor], path_px[j]) <= tol_px;
+            if (!close) break;
+            best = j;
+        }
+        result.push_back(path_px[best]);
+        anchor = best;
+    }
+    return result;
+}
+
+// cell_factor(px, py) >= 1: 그 칸에 들어가는 이동 비용 배수. nullptr 이면 1 (최단 경로).
+// 배수가 1 이상이므로 유클리드 휴리스틱은 그대로 허용(admissible)이다.
+std::optional<std::vector<Px>> astar(Px start, Px goal, const std::vector<uint8_t>& grid, int w, int h,
+                                     const std::function<double(int, int)>* cell_factor = nullptr) {
     auto drivable = [&](int px, int py) {
         return px >= 0 && px < w && py >= 0 && py < h && grid[(size_t)py * w + px] == 2;
     };
@@ -145,7 +182,7 @@ std::optional<std::vector<Px>> astar(Px start, Px goal, const std::vector<uint8_
             Px neighbor{nx, ny};
             if (visited.count(neighbor) || !drivable(nx, ny)) continue;
             if (dx != 0 && dy != 0 && !(drivable(cx + dx, cy) && drivable(cx, cy + dy))) continue;
-            double tentative = g_score[current] + cost;
+            double tentative = g_score[current] + cost * (cell_factor ? (*cell_factor)(nx, ny) : 1.0);
             auto it = g_score.find(neighbor);
             if (it == g_score.end() || tentative < it->second) {
                 came_from[neighbor] = current;
@@ -162,8 +199,15 @@ std::optional<std::vector<Px>> astar(Px start, Px goal, const std::vector<uint8_
 std::vector<std::pair<double, double>> plan_path(
     const MapModel& map_model, std::pair<double, double> start, std::pair<double, double> goal,
     double robot_width, double robot_length,
-    const std::vector<std::tuple<double, double, double, double>>* dynamic_obstacles) {
-    (void)robot_length;  // 코너링 여유용으로 남겨둠 (python 과 동일하게 지금은 미사용)
+    const std::vector<std::tuple<double, double, double, double>>* dynamic_obstacles,
+    const std::vector<std::string>* allowed_zone_ids,
+    const ClearanceField* clearance, const CenterlineParams* centering) {
+    const std::vector<std::string> empty;
+    const auto& allowed = allowed_zone_ids ? *allowed_zone_ids : empty;
+    const double traffic_margin = std::hypot(robot_width, robot_length) / 2 + 0.1;
+    if (map_model.traffic_blocked(start.first, start.second, traffic_margin, allowed)
+            || map_model.traffic_blocked(goal.first, goal.second, traffic_margin, allowed))
+        throw PlanningError("endpoint intersects an unauthorized occupancy zone");
 
     if (!map_model.is_free(start.first, start.second))
         throw PlanningError("start point is not drivable");
@@ -179,6 +223,13 @@ std::vector<std::pair<double, double>> plan_path(
     int w = map_model.metadata.width_px, h = map_model.metadata.height_px;
     if (dynamic_obstacles && !dynamic_obstacles->empty())
         inflated = apply_dynamic_obstacles(map_model, inflated, w, h, *dynamic_obstacles, robot_width);
+    if (!map_model.occupancy_zones.empty()) {
+        for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+            const auto p = map_model.pixel_to_world(x, y);
+            if (map_model.traffic_blocked(p.first, p.second, traffic_margin, allowed))
+                inflated[(size_t)y*w+x] = 0;
+        }
+    }
 
     auto drivable = [&](int px, int py) {
         return px >= 0 && px < w && py >= 0 && py < h && inflated[(size_t)py * w + px] == 2;
@@ -188,11 +239,22 @@ std::vector<std::pair<double, double>> plan_path(
         inflated[(size_t)goal_px.second * w + goal_px.first] = 2;
     }
 
-    auto path_px = astar(start_px, goal_px, inflated, w, h);
+    const double res = map_model.metadata.resolution;
+    const bool centered = clearance && centering && centering->enabled && centering->weight > 0
+                          && centering->reach > 0;
+    // 벽에서 먼 칸일수록 싸다. 복도에서는 가운데가 가장 싸고, reach 밖(넓은 홀)은 모두 같은 비용이다.
+    const double reach_px = centered ? centering->reach / res : 0.0;
+    std::function<double(int, int)> factor = [&](int px, int py) {
+        double d = std::min(clearance->dist_at(px, py), reach_px);
+        double gap = 1.0 - d / reach_px;
+        return 1.0 + centering->weight * gap * gap;
+    };
+    auto path_px = astar(start_px, goal_px, inflated, w, h, centered ? &factor : nullptr);
     if (!path_px)
         throw PlanningError("no path found (blocked, or every corridor is narrower than the robot)");
 
-    auto waypoints_px = simplify(*path_px, inflated, w, h);
+    auto waypoints_px = centered ? simplify_within(*path_px, inflated, w, h, centering->tolerance / res)
+                                 : simplify(*path_px, inflated, w, h);
     std::vector<std::pair<double, double>> waypoints;
     for (auto& p : waypoints_px) waypoints.push_back(map_model.pixel_to_world(p.first, p.second));
     if (!waypoints.empty()) waypoints.back() = goal;

@@ -36,7 +36,10 @@ def _create(request, site, map_id, body, *, docking=False):
         store = registry.map_store(site)
         locations = registry.location_store(site)
         # 맵 편집과 목적지 쓰기의 락 순서를 통일한다.
-        with _EDIT_LOCK, locations._lock:
+        with request.app.state.job_coordinator.lock, _EDIT_LOCK, locations._lock:
+            if docking:
+                from fms_server.api.traffic import ensure_editable
+                ensure_editable(request, site, map_id)
             if store.active_version(map_id) != body.base_version:
                 raise MapVersionConflict('맵 버전이 변경되었습니다. 새로고침 후 다시 추가하세요.')
             model = store.load_map_model(map_id, body.base_version)

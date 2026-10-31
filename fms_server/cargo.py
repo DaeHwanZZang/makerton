@@ -23,7 +23,20 @@ LastGate 가 접수번호(receipt_no)·계정·수령 방식의 원본이라면,
 FINISHED 없이 액션이 끝나면 unknown 이다. 통신 단절만으로 물품을 없애지 않는다.
 PICK/DROP 은 C++ 시뮬레이터의 시간 기반 액션이다. 실제 적재 센서로 확인한 상태가 아니다.
 
-트레이 (TRAY_A / TRAY_B) 는 로봇 안 고정 슬롯이다. (robot_id, tray_id) 에는 진행 중인 물품이 하나뿐이다.
+트레이는 탈착식이다. TRAY_A / TRAY_B 는 로봇의 트레이 거치 칸 이름이다. 픽업 node 에서 물품이 담긴
+트레이를 칸에 싣고(PICK), 세대에서 물품만 내려놓고(DROP, 빈 트레이는 남음), 반납 node 에서 빈 트레이를
+칸마다 내려놓는다(반납 DROP, payload_id = TRAY_RETURN:{bundle_id}:{칸}). 물리 트레이 개체 ID 는 추적하지 않는다.
+
+칸 상태 (bundle.trays[칸].state)
+    none        트레이 없음 (반납 완료 또는 실은 적 없음)
+    reserved    이번 묶음에 배정, 아직 안 실음
+    loading     트레이 적재 중 (PICK RUNNING)
+    loaded      물품 담긴 트레이 실림 (PICK FINISHED)
+    unloading   물품 하차 중 (DROP RUNNING)
+    empty_tray  빈 트레이 실림 (DROP FINISHED)
+    returning   트레이 반납 중 (반납 DROP RUNNING)
+    unknown     확인 필요
+두 칸이 모두 none 이어야 새 묶음을 받는다. 배송을 다 마쳐도 반납 전에는 받지 않는다.
 """
 
 from __future__ import annotations
@@ -45,8 +58,22 @@ TRAY_RETURN_PREFIX = "TRAY_RETURN:"
 
 TERMINAL = ("delivered", "returned", "canceled")
 ACTIVE = ("planned", "loading", "onboard", "unloading", "unknown")
-TRAY_STATE = {"planned": "reserved", "loading": "loading", "onboard": "occupied",
-              "unloading": "unloading", "unknown": "unknown"}
+# 칸에 트레이가 실려 있거나 결과가 불확실한 상태 (반납 대상)
+TRAY_ON_ROBOT = ("loading", "loaded", "unloading", "empty_tray", "returning", "unknown")
+_TRAY_FROM_PARCEL = {"planned": "reserved", "loading": "loading", "onboard": "loaded",
+                     "unloading": "unloading", "delivered": "empty_tray", "returned": "none",
+                     "canceled": "none", "unknown": "unknown"}
+
+
+def tray_return_payload(bundle_id: str, tray: str) -> str:
+    return f"{TRAY_RETURN_PREFIX}{bundle_id}:{tray}"
+
+
+def parse_tray_return(payload: str) -> Optional[tuple[str, str]]:
+    if not payload.startswith(TRAY_RETURN_PREFIX):
+        return None
+    bundle_id, _, tray = payload[len(TRAY_RETURN_PREFIX):].rpartition(":")
+    return (bundle_id, tray) if bundle_id and tray in TRAYS else None
 
 # 허용 전이. 운영자 확정(resolve)은 unknown/onboard/planned 에서 별도 표로 검사한다.
 _ALLOWED = {
@@ -144,28 +171,31 @@ class CargoStore:
         return view
 
     def robot_cargo(self, robot_id: str) -> dict:
-        """로봇 트레이 두 칸의 현재 물품. 확인된 적재물과 확인 필요한 물품을 구분한다."""
+        """로봇 두 칸의 트레이·물품. 열린 묶음이 없으면 두 칸 모두 트레이 없음."""
         with self._lock:
-            trays = {tray: None for tray in TRAYS}
-            for parcel in self._data["parcels"].values():
-                if parcel["status"] in ACTIVE and parcel.get("assigned_robot_id") == robot_id \
-                        and parcel.get("tray_id") in trays:
-                    trays[parcel["tray_id"]] = parcel
             bundle = next((b for b in self._data["bundles"].values()
                            if b["robot_id"] == robot_id and b["status"] not in ("closed", "canceled")), None)
-            return {
-                "robot_id": robot_id,
-                "bundle": self._bundle_view(bundle) if bundle else None,
-                "trays": [{"tray_id": tray,
-                           "state": TRAY_STATE[p["status"]] if p else "empty",
-                           "parcel": copy.deepcopy(p) if p else None}
-                          for tray, p in trays.items()],
-            }
+            trays = []
+            for tray in TRAYS:
+                slot = (bundle or {}).get("trays", {}).get(tray) or {"state": "none", "parcel_id": None}
+                parcel = self._data["parcels"].get(slot.get("parcel_id")) if slot.get("parcel_id") else None
+                show = slot["state"] not in ("none", "empty_tray")
+                trays.append({"tray_id": tray, "state": slot["state"],
+                              "parcel": copy.deepcopy(parcel) if parcel and show else None,
+                              "last_parcel_id": slot.get("parcel_id")})
+            return {"robot_id": robot_id, "bundle": self._bundle_view(bundle) if bundle else None,
+                    "trays": trays}
 
     def active_for_station(self, station_id: str) -> list[str]:
+        """스테이션을 아직 쓰는 물품. 진행 중 물품과, 트레이를 반납하지 않은 묶음(빈 트레이 포함)의 물품."""
         with self._lock:
-            return [p["parcel_id"] for p in self._data["parcels"].values()
-                    if p.get("pickup_station_id") == station_id and p["status"] in ACTIVE]
+            ids = {p["parcel_id"] for p in self._data["parcels"].values()
+                   if p.get("pickup_station_id") == station_id and p["status"] in ACTIVE}
+            for bundle in self._data["bundles"].values():
+                if (bundle.get("pickup_station_id") == station_id
+                        and any(t["state"] != "none" for t in bundle.get("trays", {}).values())):
+                    ids.update(i["parcel_id"] for i in bundle["items"])
+            return sorted(ids)
 
     # -- 묶음 생성 ---------------------------------------------------------
 
@@ -186,9 +216,9 @@ class CargoStore:
                 raise CargoError(f"트레이는 {', '.join(TRAYS)}에 하나씩 배정해야 한다")
             if len({i["receipt_no"] for i in items}) != len(items):
                 raise CargoError("같은 물품이 두 트레이에 배정되었다")
-            busy = [t["tray_id"] for t in self.robot_cargo(robot_id)["trays"] if t["state"] != "empty"]
+            busy = [t["tray_id"] for t in self.robot_cargo(robot_id)["trays"] if t["state"] != "none"]
             if busy:
-                raise CargoError(f"로봇 {robot_id} 트레이 {', '.join(busy)}가 비어 있지 않다")
+                raise CargoError(f"로봇 {robot_id} 칸 {', '.join(busy)}에 트레이가 반납되지 않았다")
             bundle_id = f"B-{uuid4().hex}"
             now = _now()
             entries = []
@@ -223,7 +253,8 @@ class CargoStore:
             bundle = {"bundle_id": bundle_id, "site_id": site_id, "delivery_job_id": delivery_job_id,
                       "robot_id": robot_id, "pickup_station_id": station_id, "pickup_station": station_name,
                       "status": "loading", "items": entries, "created_at": now, "updated_at": now,
-                      "closed_at": None, "error": None}
+                      "closed_at": None, "error": None,
+                      "trays": {e["tray_id"]: {"state": "reserved", "parcel_id": e["parcel_id"]} for e in entries}}
             self._data["bundles"][bundle_id] = bundle
             self._save()
             log.info("배송 묶음 %s: 로봇 %s %s", bundle_id, robot_id,
@@ -284,7 +315,18 @@ class CargoStore:
                 target = {"RUNNING": "unloading", "FINISHED": "delivered"}.get(status)
             if target and self._move(parcel, target, f"{kind.upper()} {status}", action_id=action_id,
                                      location=location):
+                self._sync_slot(parcel)
                 self._save()
+
+    def _slot(self, parcel: dict) -> Optional[dict]:
+        bundle = self._data["bundles"].get(parcel.get("bundle_id"))
+        return (bundle or {}).get("trays", {}).get(parcel.get("tray_id")) if bundle else None
+
+    def _sync_slot(self, parcel: dict) -> None:
+        """물품 상태에서 칸 상태를 정한다 (적재·하차 단계). 반납 단계는 observe_tray_return 이 다룬다."""
+        slot = self._slot(parcel)
+        if slot is not None and slot["state"] not in ("returning", "none"):
+            slot["state"] = _TRAY_FROM_PARCEL[parcel["status"]]
 
     def mark_uncertain(self, parcel_ids: list[str], reason: str) -> list[str]:
         """FINISHED 없이 끝난 액션. 시작이 관측된 물품(loading/unloading)만 unknown 으로 둔다."""
@@ -294,28 +336,96 @@ class CargoStore:
                 parcel = self._data["parcels"].get(pid)
                 if parcel and parcel["status"] in ("loading", "unloading"):
                     self._move(parcel, "unknown", reason)
+                    self._sync_slot(parcel)
                     changed.append(pid)
             if changed:
                 self._save()
         return changed
 
-    def return_trays(self, bundle_id: str, location: Optional[dict] = None) -> dict:
-        """보관소 픽업 node 의 트레이 반납 FINISHED. 남은 물품은 반납, 실리지 않은 계획은 취소하고 묶음을 닫는다."""
+    def trays_to_return(self, bundle_id: str) -> list[str]:
+        """반납 액션이 필요한 칸 (트레이가 실렸거나 불확실한 칸)."""
         with self._lock:
             bundle = self._data["bundles"].get(bundle_id)
             if bundle is None:
                 raise CargoNotFound(f"배송 묶음 {bundle_id!r} 없음")
-            for item in bundle["items"]:
-                parcel = self._data["parcels"][item["parcel_id"]]
-                if parcel["status"] == "onboard":
-                    self._move(parcel, "returned", "트레이 반납", location=location)
-                elif parcel["status"] == "planned":
-                    self._move(parcel, "canceled", "적재되지 않은 채 묶음 종료")
-            if any(self._data["parcels"][i["parcel_id"]]["status"] in ACTIVE for i in bundle["items"]):
-                # unknown 물품이 남으면 묶음을 닫지 않는다. 운영자가 확정해야 한다.
-                bundle["status"], bundle["error"] = "blocked", "확인 필요한 물품이 있어 묶음을 닫지 않았다"
+            return [t for t in TRAYS if bundle["trays"][t]["state"] in TRAY_ON_ROBOT]
+
+    def observe_tray_return(self, bundle_id: str, tray: str, status: str, *, action_id: str,
+                            location: Optional[dict] = None) -> None:
+        """반납 node 의 칸별 반납 DROP. FINISHED 면 칸을 비우고 실려 있던 미배송 물품은 반납으로 둔다."""
+        with self._lock:
+            bundle = self._data["bundles"].get(bundle_id)
+            if bundle is None or tray not in bundle.get("trays", {}):
+                return
+            slot = bundle["trays"][tray]
+            if status == "RUNNING" and slot["state"] in TRAY_ON_ROBOT and slot["state"] != "returning":
+                slot["before_return"], slot["state"] = slot["state"], "returning"
+            elif status == "FINISHED" and slot["state"] != "none":
+                slot["state"] = "none"
+                parcel = self._data["parcels"].get(slot.get("parcel_id"))
+                if parcel and parcel["status"] == "onboard":
+                    self._move(parcel, "returned", f"{tray} 트레이 반납", action_id=action_id, location=location)
+                elif parcel and parcel["status"] == "planned":
+                    self._move(parcel, "canceled", "적재되지 않은 채 반납")
+                log.info("묶음 %s %s 트레이 반납", bundle_id, tray)
             else:
-                bundle["status"], bundle["closed_at"], bundle["error"] = "closed", _now(), None
+                return
+            bundle["updated_at"] = _now()
+            self._close_if_done(bundle)
+            self._save()
+
+    def mark_trays_uncertain(self, bundle_id: str, reason: str) -> None:
+        """반납 액션이 FINISHED 없이 끝났다. 반납 중이던 칸은 unknown."""
+        with self._lock:
+            bundle = self._data["bundles"].get(bundle_id)
+            if bundle is None:
+                return
+            changed = False
+            for slot in bundle.get("trays", {}).values():
+                if slot["state"] == "returning":
+                    slot["state"], changed = "unknown", True
+            if changed:
+                bundle["error"] = reason
+                self._save()
+
+    def restore_trays(self, bundle_id: str) -> None:
+        """운영자가 잔여 적재물을 확인한 뒤: 불확실한 칸을 물품 상태 기준으로 되돌려 반납을 다시 하게 한다."""
+        with self._lock:
+            bundle = self._data["bundles"].get(bundle_id)
+            if bundle is None:
+                return
+            for slot in bundle.get("trays", {}).values():
+                if slot["state"] in ("unknown", "returning"):
+                    parcel = self._data["parcels"].get(slot.get("parcel_id"))
+                    state = _TRAY_FROM_PARCEL[parcel["status"]] if parcel else "none"
+                    # 반납 중 불확실이면 트레이는 아직 로봇에 있다고 본다 (운영자 확인).
+                    if slot.get("before_return"):
+                        slot["state"] = slot.pop("before_return")
+                    else:
+                        slot["state"] = "loaded" if state == "unknown" else state
+            self._save()
+
+    def _close_if_done(self, bundle: dict) -> None:
+        trays_empty = all(t["state"] == "none" for t in bundle.get("trays", {}).values())
+        parcels_done = all(self._data["parcels"][i["parcel_id"]]["status"] in TERMINAL for i in bundle["items"])
+        if trays_empty and parcels_done:
+            bundle["status"], bundle["closed_at"], bundle["error"] = "closed", _now(), None
+        elif trays_empty:
+            bundle["status"], bundle["error"] = "blocked", "확인 필요한 물품이 있어 묶음을 닫지 않았다"
+
+    def finish_without_trays(self, bundle_id: str) -> dict:
+        """반납할 트레이가 하나도 없을 때 (아무것도 싣지 않음). 계획을 취소하고 묶음을 닫는다."""
+        with self._lock:
+            bundle = self._data["bundles"].get(bundle_id)
+            if bundle is None:
+                raise CargoNotFound(f"배송 묶음 {bundle_id!r} 없음")
+            for tray, slot in bundle["trays"].items():
+                if slot["state"] == "reserved":
+                    slot["state"] = "none"
+                    parcel = self._data["parcels"].get(slot.get("parcel_id"))
+                    if parcel and parcel["status"] == "planned":
+                        self._move(parcel, "canceled", "적재되지 않은 채 묶음 종료")
+            self._close_if_done(bundle)
             bundle["updated_at"] = _now()
             self._save()
             return self._bundle_view(bundle)
@@ -376,10 +486,13 @@ class CargoStore:
             parcel.pop("candidates", None)
             parcel["history"].append({"at": now, "from": current, "to": to,
                                       "reason": f"운영자 확정: {reason.strip()}"})
+            slot = self._slot(parcel)
+            if slot is not None and slot["state"] != "none":
+                # 반납했다/실리지 않았다고 확정하면 그 칸 트레이도 로봇에 없다.
+                slot["state"] = _TRAY_FROM_PARCEL[to]
             bundle = self._data["bundles"].get(parcel.get("bundle_id"))
-            if bundle and bundle["status"] == "blocked" and all(
-                    self._data["parcels"][i["parcel_id"]]["status"] in TERMINAL for i in bundle["items"]):
-                bundle["status"], bundle["closed_at"], bundle["error"] = "closed", now, None
+            if bundle and bundle["status"] == "blocked":
+                self._close_if_done(bundle)
             self._save()
             log.info("물품 %s 운영자 확정 %s -> %s (%s)", parcel_id, current, to, reason)
             return copy.deepcopy(parcel)

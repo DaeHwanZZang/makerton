@@ -18,7 +18,7 @@
 동기화 대상
 -----------
 `common/` 이 원본. 바뀌면:
-    include+src/map_annotations.*   (C++ 수동 포팅 — 로봇이 소비하면, 아직 없음)
+    include/map_model.hpp + src/map_model.cpp (C++ 점유 존 경계 읽기)
     viewer/common/map_annotations.py (파일 복사, fms_server/tests/test_common_sync.py 가 검사)
 
 벤더 원본 (`location_meta.json`, `zone_meta.json`)은 이 스키마와 필드명이
@@ -48,6 +48,47 @@ def normalize_theta(theta: float) -> float:
     return math.atan2(math.sin(theta), math.cos(theta))
 
 
+def rectangle_polygon(x: float, y: float, width: float, height: float,
+                      rotation: float = 0) -> list[Point]:
+    """회전 전 좌상단·크기로 정의한 사각형을 중심 기준으로 회전한다. 각도는 도 단위다."""
+    if rotation % 360 == 0:
+        return [Point(x=x,y=y),Point(x=x+width,y=y),Point(x=x+width,y=y+height),Point(x=x,y=y+height)]
+    cx, cy = x + width / 2, y + height / 2
+    angle = math.radians(rotation % 360)
+    c, s = math.cos(angle), math.sin(angle)
+    return [Point(x=cx+c*dx-s*dy, y=cy+s*dx+c*dy)
+            for dx,dy in ((-width/2,-height/2),(width/2,-height/2),
+                          (width/2,height/2),(-width/2,height/2))]
+
+
+def rectangle_frame(polygon) -> tuple[float, float, float, float, float, float]:
+    """직사각형의 중심·가로 단위축·반너비·반높이. 회전/꼭짓점 오차를 허용한다."""
+    pts = list(polygon)
+    if len(pts) == 5 and math.hypot(pts[0].x-pts[-1].x,pts[0].y-pts[-1].y) < 1e-8:
+        pts.pop()
+    if len(pts) != 4 or not all(math.isfinite(v) for p in pts for v in (p.x,p.y)):
+        raise ValueError("직사각형의 꼭짓점 4개가 필요하다")
+    a,b,c,d = pts
+    ux,uy,vx,vy = b.x-a.x,b.y-a.y,d.x-a.x,d.y-a.y
+    width,height = math.hypot(ux,uy),math.hypot(vx,vy)
+    if (min(width,height) <= 1e-9 or abs(ux*vx+uy*vy) > 1e-6*width*height
+            or math.hypot(c.x-(b.x+d.x-a.x),c.y-(b.y+d.y-a.y)) > 1e-6*max(width,height)):
+        raise ValueError("인접한 변이 직각인 직사각형이어야 한다")
+    return ((a.x+c.x)/2,(a.y+c.y)/2,ux/width,uy/width,width/2,height/2)
+
+
+def rectangles_overlap(first, second) -> bool:
+    """분리축 검사. 회전 사각형의 경계 접촉도 겹침으로 취급한다."""
+    ax,ay,au,av,aw,ah = rectangle_frame(first)
+    bx,by,bu,bv,bw,bh = rectangle_frame(second)
+    for x,y in ((au,av),(-av,au),(bu,bv),(-bv,bu)):
+        ra = aw*abs(au*x+av*y)+ah*abs(-av*x+au*y)
+        rb = bw*abs(bu*x+bv*y)+bh*abs(-bv*x+bu*y)
+        if abs((bx-ax)*x+(by-ay)*y) > ra+rb+1e-9:
+            return False
+    return True
+
+
 # =============================================================================
 # Location
 # =============================================================================
@@ -63,6 +104,7 @@ class LocationType(str, Enum):
     PARKING = "parking"       # 대기/주차 지점
     WAYPOINT = "waypoint"     # 단순 경유점 (작업 없음)
     PICKUP = "pickup"         # 픽업스테이션 node. site location 의 zone_id 로 pickup zone 과 1:1 연결
+    TRAY_RETURN = "tray_return"  # 픽업스테이션 반납 node. 배송 후 빈 트레이를 내려놓는다 (zone_id 로 연결)
     OTHER = "other"
 
     @classmethod
@@ -95,12 +137,28 @@ class ZoneType(str, Enum):
     PROHIBIT = "prohibit"     # 진입 금지. FMS 가 grid 에 OCCUPIED 로 굽는다
     ELEVATOR = "elevator"     # 엘리베이터 구역. 위치 표시용, 호출/탑승 제어는 별도
     PICKUP = "pickup"         # 픽업스테이션 구역. 적재 장치 위치 표시용. 굽지 않고 동작도 없다
+    OCCUPANCY = "occupancy"   # 한 대씩 통과하는 점유 존. 정적 이미지에 굽지 않는다
     SLOW = "slow"             # 감속 구역 (미구현, 예약)
     ONEWAY = "oneway"         # 일방통행 (미구현, 예약)
 
     @classmethod
     def _missing_(cls, value: object) -> "ZoneType":
         return cls.PROHIBIT
+
+
+class TrafficGate(BaseModel):
+    """진입 방향별 대기·출구 node. 좌표는 존 버전에 복사해 보존한다."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    gate_id: str = Field(min_length=1)
+    wait: Pose
+    exit: Pose
+
+    @model_validator(mode="after")
+    def finite_coordinates(self):
+        if not all(math.isfinite(v) for p in (self.wait, self.exit) for v in (p.x,p.y,p.theta)):
+            raise ValueError("대기·출구 node는 유한한 좌표여야 한다")
+        return self
 
 
 class Zone(BaseModel):
@@ -112,9 +170,16 @@ class Zone(BaseModel):
     name: str = ""
     type: ZoneType = ZoneType.PROHIBIT
     polygon: list[Point] = Field(min_length=3, description="꼭짓점 목록 (닫힘은 암묵적)")
+    gates: list[TrafficGate] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_polygon(self) -> "Zone":
+        if self.type == ZoneType.OCCUPANCY:
+            rectangle_frame(self.polygon)
+            if not self.gates or len({g.gate_id for g in self.gates}) != len(self.gates):
+                raise ValueError("점유 존에는 고유 ID의 대기·출구 node 쌍이 필요하다")
+        elif self.gates:
+            raise ValueError("대기·출구 node는 점유 존에만 지정할 수 있다")
         # 첫 점 == 끝 점으로 명시적으로 닫아 보낸 경우는 허용하되 최소 3개는 유지.
         if len(self.polygon) >= 2 and self.polygon[0] == self.polygon[-1] and len(self.polygon) < 4:
             raise ValueError("닫힌 폴리곤이면 꼭짓점이 4개 이상이어야 한다 (첫 점 반복 포함)")

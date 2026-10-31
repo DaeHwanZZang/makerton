@@ -9,7 +9,7 @@ const titles = {
   map:'실시간 맵', robots:'로봇', jobs:'작업 게시판', presets:'작업 프리셋', maps:'맵 관리', locations:'목적지·도킹', elevators:'엘리베이터', settings:'현장 설정'
 };
 const types = {
-  station:'작업 지점', charger:'충전소', parking:'주차 지점', waypoint:'경유점', pickup:'픽업 지점', other:'기타'
+  station:'작업 지점', charger:'충전소', parking:'주차 지점', waypoint:'경유점', pickup:'픽업 지점', tray_return:'반납 지점', other:'기타'
 };
 const states = {
   IDLE:'대기', BUSY:'작업 중', MOVING:'이동 중', ERROR:'오류', EMERGENCY:'비상 정지', CHARGING:'충전 중', PAUSED:'일시 정지', ONLINE:'연결됨', OFFLINE:'연결 끊김', STALE:'수신 지연', LOST:'연결 유실', UNREGISTERED:'미등록', pending:'배정 대기', assigned:'배정됨 · 응답 대기', canceling:'취소 확인 중', working:'진행 중', success:'완료', failed:'실패', canceled:'취소', LOCALIZED:'위치 확인됨', UNLOCALIZED:'위치 미확정', LOCALIZING:'위치 확인 중'
@@ -83,6 +83,7 @@ function row(target, cells) {
     tr.append(td);
   }
   target.append(tr);
+  return tr;
 }
 function empty(target, columns, message) {
   if(target.children.length)return;
@@ -256,8 +257,8 @@ function poseText(p) {
 function renderLocations() {
   const tb=$('#locationRows');
   tb.replaceChildren();
-  // 픽업 지점은 구역과 함께 맵의 픽업스테이션 메뉴에서 삭제한다. 여기서는 이름만 바꾼다.
-  for(const l of app.locations)row(tb,[l.name,l.map_id,types[l.type]||l.type,poseText(l),[button('편집',()=>fillLocation(l,true)),...(l.type==='pickup'?[]:[button('삭제',async()=>{
+  // 픽업·반납 지점은 구역과 함께 맵의 픽업스테이션 메뉴에서 삭제한다. 여기서는 이름만 바꾼다 (반납 지점은 스테이션 이름을 따른다).
+  for(const l of app.locations)row(tb,[l.name,l.map_id,types[l.type]||l.type,poseText(l),[...(l.type==='tray_return'?[]:[button('편집',()=>fillLocation(l,true))]),...(['pickup','tray_return'].includes(l.type)?[]:[button('삭제',async()=>{
     if(!confirm(`목적지 '${l.name}'을 삭제할까요?`))return;await request(`${siteURL()}/locations/${enc(l.name)}`,'DELETE');if(app.edit===l.name)resetEdit();await refreshSite();notify('목적지를 삭제했습니다.');
   },'danger')])]]);
   empty(tb,5,app.site?'등록한 목적지가 없습니다.':'먼저 현장을 선택하세요.');
@@ -291,10 +292,59 @@ function resetEdit() {
   $('#cancelLocEdit').hidden=true;
 }
 $('#cancelLocEdit').onclick=resetEdit;
+// 보관소 배송 1건은 한 행으로 보이고, 펼치면 하위 작업(픽업 이동·적재·세대 하차·반납)이 들여쓰기로 보인다.
+const expandedDeliveries=new Set();
+function deliveryJobStatus(d){
+  return d.phase==='queued'?'pending':['done','canceled'].includes(d.phase)?'success':'working';
+}
+// 로봇 배정 전 배송 취소. 갈 수 없는 세대(목적지 연결 없음) 물품은 보관소가 직접 수령으로 바꾸고 나머지로 새 배송을 만든다.
+async function cancelDelivery(d){
+  const reason=prompt(`배송 ${d.job_id}를 취소할까요?\n목적지 연결이 없는 세대의 물품은 직접 수령으로 바뀌고, 나머지는 다음 배송으로 다시 묶입니다.\n취소 사유 (선택):`,d.error||'');
+  if(reason===null)return;
+  const result=await request(`/api/v1/locker/deliveries/${enc(d.job_id)}/cancel`,'POST',{reason});
+  await pollCargo();renderJobs();
+  notify(result.unroutable.length?`배송을 취소했습니다. 직접 수령 전환 ${result.unroutable.length}건.`:'배송을 취소했습니다.');
+}
+function deliveryRow(tb,d){
+  const p=d.progress||{},children=app.jobs.filter(j=>j.external_owner===d.job_id),open=expandedDeliveries.has(d.job_id);
+  const toggle=button(open?'▾':'▸',()=>{open?expandedDeliveries.delete(d.job_id):expandedDeliveries.add(d.job_id);renderJobs();});
+  toggle.setAttribute('aria-expanded',String(open));toggle.setAttribute('aria-label',`${d.job_id} 하위 작업 ${open?'접기':'펼치기'}`);
+  const title=el('span');title.append(toggle,document.createTextNode(`배송 ${d.job_id} · 보관소`));
+  const progress=el('div',undefined,'delivery-progress'),meter=el('progress');
+  meter.max=p.total||1;meter.value=p.done||0;
+  progress.append(el('span',window.deliveryView.summary(d)),meter);
+  // 묶음 확정 전에는 예상 목록의 세대를 보인다.
+  const households=d.stops?.length?d.stops.map(s=>s.household):[...new Set((d.items||[]).map(i=>`${i.dong}-${i.ho}`))].sort().map(h=>`${h}(예상)`);
+  const route=[d.pickup_name||'픽업',...households,d.return_name||'반납',d.charger||(d.dock_note?null:'충전소')].filter(Boolean).join(' → ');
+  const actions=[button('진행 상세',()=>window.deliveryUI.open(d.job_id))];
+  const child=children.find(j=>j.job_id===d.child_id);
+  if(child&&['assigned','working'].includes(child.status))actions.push(button('현재 단계 취소',async()=>{
+    if(!confirm(`배송 ${d.job_id}의 현재 하위 작업 ${child.job_id}를 취소할까요? 배송은 운영자 확인 필요 상태가 되고 로봇 예약은 유지됩니다.`))return;
+    await request(`${siteURL()}/jobs/${enc(child.job_id)}/cancel`,'POST',{});await refreshSite();
+  }));
+  if(d.phase==='blocked')actions.push(button('적재물 확인·복귀',()=>{location.href='/static/locker.html';}));
+  if(d.phase==='queued'&&!d.robot_id)actions.push(button('배송 취소',()=>run(()=>cancelDelivery(d)),'danger'));
+  const status=window.deliveryView.overall[p.status]||label(d.phase);
+  const tr=row(tb,[title,status,d.robot_id||'—',route,progress,d.error||'—',actions]);
+  if(tr){tr.classList.add('delivery-row');tr.dataset.status=p.status||'';}
+  if(!open)return;
+  for(const j of children){
+    const stage=window.deliveryView.stageName(j,d);
+    const sub=row(tb,[`${j.job_id} · ${stage}`,label(j.status),j.robot_id,j.commands.map(c=>window.jobUI?window.jobUI.describe(c):c.target).join(' → '),`${j.done_commands}/${j.total_commands}`,j.error||j.traffic_waiting||'—',[]]);
+    if(sub)sub.classList.add('delivery-child');
+  }
+  if(!children.length){const sub=row(tb,['하위 작업이 아직 없습니다.','','','','','',[]]);if(sub)sub.classList.add('delivery-child');}
+}
 function renderJobs() {
   const tb=$('#jobRows');
   tb.replaceChildren();
+  const deliveries=app.cargo?.deliveries||[],owners=new Set(deliveries.map(d=>d.job_id));
+  for(const d of [...deliveries].reverse()){
+    if(window.jobUI && !window.jobUI.visible({status:deliveryJobStatus(d)}))continue;
+    deliveryRow(tb,d);
+  }
   for(const j of app.jobs){
+    if(j.external_owner&&owners.has(j.external_owner))continue;   // 배송 행 아래에 묶어 보인다
     if(window.jobUI && !window.jobUI.visible(j))continue;
     const actions=[];
     if(j.status==='pending'&&!j.external_owner){
@@ -316,7 +366,7 @@ function renderJobs() {
       if(!confirm(`${j.job_id} 작업을 삭제할까요?`))return;await request(`${siteURL()}/jobs/${enc(j.job_id)}`,'DELETE');await refreshSite();
     },'danger'));
     if(j.status==='pending')actions.push(button('취소',async()=>{await request(`${siteURL()}/jobs/${enc(j.job_id)}/cancel`,'POST',{});await refreshSite();}));
-    row(tb,[j.preset_name?`${j.job_id} · ${j.preset_name}`:j.job_id,j.status==='pending'&&j.auto_assign?'자동 배정 대기':label(j.status),j.robot_id,j.commands.map(c=>window.jobUI?window.jobUI.describe(c):c.target).join(' → '),`${j.done_commands}/${j.total_commands}`,j.error||'—',actions]);
+    row(tb,[j.preset_name?`${j.job_id} · ${j.preset_name}`:j.job_id,j.status==='pending'&&j.auto_assign?'자동 배정 대기':label(j.status),j.robot_id,j.commands.map(c=>window.jobUI?window.jobUI.describe(c):c.target).join(' → '),`${j.done_commands}/${j.total_commands}`,j.error||j.traffic_waiting||'—',actions]);
   }
   empty(tb,7,app.site?'작업이 없습니다. 목적지를 등록한 뒤 작업을 만드세요.':'먼저 현장을 선택하세요.');
 }
@@ -512,7 +562,8 @@ function draw() {
     ctx.beginPath();
     pts.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));
     ctx.closePath();
-    const color=z.type==='pickup'?'#f0a35e':z.type==='elevator'?'#ab9aee':z.type==='slow'?'#d6ad59':z.type==='oneway'?'#77a9e4':'#e57982';
+    const traffic=z.type==='occupancy'?window.trafficView?.snapshot?.zones.find(t=>t.zone_id===z.zone_id):null;
+    const color=z.type==='occupancy'?(traffic?.status==='blocked'?'#e57982':traffic?.status==='occupied'?'#e2bd79':'#59c8be'):z.type==='pickup'?'#f0a35e':z.type==='elevator'?'#ab9aee':z.type==='slow'?'#d6ad59':z.type==='oneway'?'#77a9e4':'#e57982';
     ctx.fillStyle=color+'32';
     ctx.fill();
     ctx.strokeStyle=color;
@@ -521,11 +572,22 @@ function draw() {
     view.hits.push({
       kind:'zone',data:z,pts
     });
+    if(z.type==='occupancy'){
+      for(const g of z.gates||[])for(const [pose,title] of [[g.wait,'대기'],[g.exit,'출구']]){
+        const p=point(pose);ctx.beginPath();ctx.arc(p.x,p.y,5,0,Math.PI*2);ctx.stroke();
+        if(view.layers.labels)text(title,p.x+7,p.y-7,color);
+      }
+      if(traffic&&traffic.status!=='free')text(traffic.status==='blocked'?'확인 필요':`${traffic.status==='occupied'?'점유':'예약'} ${traffic.owner||''}`,pts[0].x+6,pts[0].y+32,color);
+    }
     const station=z.type==='pickup'?app.pickupStations.find(s=>s.station_id===z.zone_id):null;
-    if(station?.node){
-      // 표시용 구역과 픽업 node 의 1:1 연결선. node 는 구역 밖일 수 있다.
-      const c=pts.reduce((a,p)=>({x:a.x+p.x/pts.length,y:a.y+p.y/pts.length}),{x:0,y:0}),n=point(station.node);
-      ctx.save();ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(c.x,c.y);ctx.lineTo(n.x,n.y);ctx.stroke();ctx.restore();
+    if(station){
+      // 표시용 구역과 픽업·반납 node 의 연결선. node 는 구역 밖일 수 있다.
+      const c=pts.reduce((a,p)=>({x:a.x+p.x/pts.length,y:a.y+p.y/pts.length}),{x:0,y:0});
+      for(const [pose,stroke] of [[station.node,color],[station.return_node,'#5ec8f0']]){
+        if(!pose)continue;
+        const n=point(pose);
+        ctx.save();ctx.strokeStyle=stroke;ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(c.x,c.y);ctx.lineTo(n.x,n.y);ctx.stroke();ctx.restore();
+      }
     }
     if(view.layers.labels&&view.scale/view.meta.resolution>12)text(station?.name||z.name||label(z.type),pts[0].x+6,pts[0].y+16,color);
   }
@@ -539,7 +601,7 @@ function draw() {
     const dock=['charger','parking'].includes(l.type);
     if(!(dock?view.layers.docks:view.layers.locations))continue;
     const p=point(l.pose),selected=app.selection?.key===`location:${l.source}:${l.name}`;
-    const color=l.type==='charger'?'#77d8c3':l.type==='parking'?'#b3a1ed':l.type==='pickup'?'#f0a35e':'#e2bd79';
+    const color=l.type==='charger'?'#77d8c3':l.type==='parking'?'#b3a1ed':l.type==='pickup'?'#f0a35e':l.type==='tray_return'?'#5ec8f0':'#e2bd79';
     ctx.save();
     ctx.translate(p.x,p.y);
     ctx.strokeStyle=color;
@@ -567,7 +629,8 @@ function draw() {
     ctx.lineTo(18,4);
     ctx.stroke();
     ctx.restore();
-    if(view.layers.labels&&(dock||view.scale/view.meta.resolution>16||selected))text(l.name,p.x+13,p.y-12,color);
+    const mark=l.type==='pickup'?'⇲ ':l.type==='tray_return'?'⇱ ':'';
+    if(view.layers.labels&&(dock||mark||view.scale/view.meta.resolution>16||selected))text(mark+l.name,p.x+13,l.type==='tray_return'?p.y+24:p.y-12,color);
     view.hits.push({
       kind:'location',data:l,x:p.x,y:p.y,r:15
     });
@@ -688,13 +751,14 @@ function showObject(hit) {
     box.append(el('h3',d.name),el('p',types[d.type]||d.type),el('p',`좌표: ${poseText(d.pose)}`),el('p',d.source==='등록'?'관리자가 등록한 목적지':'맵에 포함된 원본 위치'),button(d.source==='등록'?'목적지 편집':'목적지로 가져오기',()=>fillLocation({
       ...d.pose,name:d.name,type:d.type,map_id:app.map
     },d.source==='등록')));
-    const station=d.type==='pickup'&&d.source==='등록'?app.pickupStations.find(s=>s.station_id===d.zone_id):null;
+    const station=['pickup','tray_return'].includes(d.type)&&d.source==='등록'?app.pickupStations.find(s=>s.station_id===d.zone_id):null;
     if(station)pickupStationInfo(box,station,false);
   }
   else {
     const station=d.type==='pickup'?app.pickupStations.find(s=>s.station_id===d.zone_id):null;
     box.append(el('h3',station?.name||d.name||'이름 없는 구역'),el('p',({
       prohibit:'주행금지구역 (Forbidden zone)',elevator:'엘리베이터 구역 · 위치 표시용',slow:'감속 구역 · 표시 전용',oneway:'일방통행 구역 · 표시 전용',
+      occupancy:'점유 존 · 한 대씩 통과',
       pickup:'픽업스테이션 구역 · 적재 장치 위치 표시용 (주행을 막지 않음)'
     })[d.type]||d.type));
     if(station)pickupStationInfo(box,station,true);
@@ -704,7 +768,8 @@ function showObject(hit) {
 }
 function pickupStationInfo(box,station,fromZone) {
   box.append(el('p',`스테이션 ID: ${station.station_id}`));
-  if(station.node)box.append(el('p',`픽업 지점: ${poseText(station.node)}`));
+  if(station.node)box.append(el('p',`⇲ 픽업 지점: ${poseText(station.node)}`));
+  box.append(el('p',station.return_node?`⇱ 반납 지점: ${station.return_name} · ${poseText(station.return_node)}`:'⇱ 반납 지점: 없음 — 배송에 쓸 수 없습니다',station.return_node?undefined:'warn'));
   if(station.status!=='ok'){
     box.append(el('p',`연결 확인 필요: ${station.problems.join(', ')}`,'warn'));
     // 구역이 사라진 손상 스테이션은 구역을 클릭할 수 없으므로 node 쪽에서 정리한다.
@@ -861,7 +926,10 @@ async function pollCargo() {
     if(site!==app.site)return;
     const changed=JSON.stringify(body)!==JSON.stringify(app.cargo);
     app.cargo=body;
-    if(changed){refreshRobotInfo();draw();}
+    if(changed){
+      refreshRobotInfo();draw();window.deliveryUI?.refresh();
+      if(app.page==='jobs')renderJobs();
+    }
   }finally{cargoBusy=false;}
 }
 setInterval(()=>run(pollCargo),1500);

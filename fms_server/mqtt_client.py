@@ -101,7 +101,12 @@ class FmsMqttClient:
 
     def publish_order(self, order: Order) -> None:
         topic = topic_order(order.robot_id)
-        payload = order.model_dump_json()
+        data = order.model_dump(mode="json")
+        # 점유 존이 없는 구간은 기존 클라이언트의 엄격한 extra 필드 검증과도 호환한다.
+        for node in data['nodes']:
+            if not node['allowed_zone_ids']:
+                node.pop('allowed_zone_ids')
+        payload = json.dumps(data, ensure_ascii=False)
         info = self._client.publish(topic, payload, qos=1)
         log.info("order 발행 %s (order_id=%s update=%d rc=%s)",
                  topic, order.order_id, order.order_update_id, info.rc)

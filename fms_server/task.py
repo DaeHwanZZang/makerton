@@ -183,6 +183,7 @@ class Job:
     external_owner: Optional[str] = None  # 외부 배송이 여러 하위 작업 동안 로봇을 예약한다
     resolved_steps: list[dict] = field(default_factory=list)
     order_snapshot: Optional[dict] = None
+    traffic: dict = field(default_factory=dict)  # 대기·출구 삽입과 원래 명령의 대응
 
     # 다층 job: route.build_plan 결과. 비어 있으면 단일 Order(이전 방식).
     plan: list[dict] = field(default_factory=list)
@@ -210,6 +211,7 @@ class Job:
             "auto_assign": self.auto_assign, "preset_name": self.preset_name,
             "external_owner": self.external_owner,
             "resolved_steps": self.resolved_steps, "order_snapshot": self.order_snapshot,
+            "traffic": self.traffic,
             "plan": self.plan, "stage": self.stage, "stage_data": self.stage_data,
             "robot_id": self.robot_id,
             "order_id": self.order_id,
@@ -232,6 +234,7 @@ class Job:
             auto_assign=data.get("auto_assign", False), preset_name=data.get("preset_name"),
             external_owner=data.get("external_owner"),
             resolved_steps=data.get("resolved_steps", []), order_snapshot=data.get("order_snapshot"),
+            traffic=data.get("traffic", {}),
             plan=data.get("plan", []), stage=data.get("stage", 0), stage_data=data.get("stage_data", {}),
             robot_id=data.get("robot_id"),
             order_id=data.get("order_id"),
@@ -365,8 +368,8 @@ class JobStore:
 def compile_to_order(job: Job, registry: SiteRegistry) -> Order:
     """
     작업 묶음의 이동/대기/도킹/주차 단계를 `Order`로 만든다. 모든 목적지는 같은 맵이어야 하고,
-    그 맵은 배정 로봇의 배정 맵과 일치해야 한다. 지금은 전부 `released=true`
-    (트래픽 제어 붙기 전).
+    그 맵은 배정 로봇의 배정 맵과 일치해야 한다. 여기서는 원본 노드를 만들고,
+    dispatch에서 traffic.prepare가 대기·출구와 연속 통행 허가를 적용한다.
     """
     if job.robot_id is None:
         raise JobError("배정된 로봇이 없다")
@@ -455,6 +458,17 @@ class JobCoordinator:
         self._unsubscribe = None
         self._lock = threading.RLock()
         self._reservations: dict[str, str] = {}
+        from fms_server.traffic import TrafficController
+        self._traffic = TrafficController(registry, fleet, store)
+
+    @property
+    def traffic(self):
+        # 테스트·내장 실행에서 저장소를 교체해도 다른 데이터 루트의 예약을 섞지 않는다.
+        if (self._traffic.registry is not self._registry or self._traffic.fleet is not self._fleet
+                or self._traffic.jobs is not self._store):
+            from fms_server.traffic import TrafficController
+            self._traffic = TrafficController(self._registry, self._fleet, self._store)
+        return self._traffic
 
     @property
     def lock(self):
@@ -555,10 +569,20 @@ class JobCoordinator:
 
         try:
             order = compile_to_order(job, self._registry)
+            from fms_server.traffic import TrafficError
+            try:
+                order = self.traffic.prepare(job, order, assignment.map_id, record.state)
+            except TrafficError as exc:
+                raise JobError(str(exc)) from None
         except JobError:
             job.robot_id = previous_robot
             raise
         job.order_snapshot = order.model_dump(mode="json")
+        update = self.traffic.update(job)
+        if update is not None:
+            order = update
+            job.order_update_id = order.order_update_id
+            job.order_snapshot = order.model_dump(mode="json")
         job.status = JobStatus.ASSIGNED
         job.dispatched_at = _now_iso()
         job.touch()
@@ -636,6 +660,9 @@ class JobCoordinator:
                 self._ctl.release_lease(eid, job.job_id)
 
     def _advance_stage(self, job: Job) -> bool:
+        if job.stage < len(job.plan) and job.plan[job.stage]['t'] == 'order':
+            # 끝난 오더의 허가를 호출/탑승/맵 전환 단계에서 다시 획득하지 않는다.
+            job.traffic = {}
         job.stage += 1
         job.stage_data = {}
         if job.stage >= len(job.plan):
@@ -675,8 +702,19 @@ class JobCoordinator:
                 if not state.is_available or state.map_id != store.map_uid(stage["map_id"]):
                     return False
                 order = self._stage_order(job, stage, oid)
+                from fms_server.traffic import TrafficError
+                try:
+                    order = self.traffic.prepare(job, order, stage["map_id"], state)
+                except TrafficError as exc:
+                    self._fail_multi(job, str(exc))
+                    return False
                 job.order_id, job.order_update_id = oid, 1
                 job.order_snapshot = order.model_dump(mode="json")
+                update = self.traffic.update(job)
+                if update is not None:
+                    order = update
+                    job.order_update_id = order.order_update_id
+                    job.order_snapshot = order.model_dump(mode="json")
                 sd["sent_at"] = now
                 job.touch()
                 self._store.save(job)
@@ -719,6 +757,12 @@ class JobCoordinator:
 
         if kind == "call":
             eid, map_id = stage["elevator_id"], stage["map_id"]
+            ride = next((st for st in job.plan[job.stage+1:] if st["t"] == "ride"), None)
+            if ride and not self.traffic.acquire_floor(job, ride["to_map"], future=True):
+                job.error = "도착 층 동시 이동 대수 제한 — 탑승 전 대기"
+                sd["t0"] = now
+                self._store.save(job)
+                return False
             if not ctl.acquire(eid, job.job_id):
                 msg = f"승강기 {eid} 를 다른 작업({ctl.lease_owner(eid)})이 쓰는 중"
                 if job.error != msg:
@@ -853,7 +897,10 @@ class JobCoordinator:
         stage = job.plan[job.stage]
         before = job.done_commands
         for node in (job.order_snapshot or {}).get("nodes", []):
-            src = stage["nodes"][node["sequence_id"]]
+            source = job.traffic.get("sources", {}).get(node["node_id"], node["sequence_id"])
+            if job.traffic and node["node_id"] not in job.traffic["sources"]:
+                continue
+            src = stage["nodes"][source]
             if node.get("action"):
                 if status.get(node["action"]["action_id"]) != ActionStatus.FINISHED:
                     break
@@ -894,6 +941,7 @@ class JobCoordinator:
         """FIFO 게시판 + ID 순서 가용 로봇. 충돌 검사는 dispatch에서 다시 한다."""
         if not getattr(self._mqtt, "connected", True):
             return
+        self.tick_traffic()
         self.tick_multifloor()
         pending = sorted((j for j in self._store.list()
                           if j.status == JobStatus.PENDING and j.auto_assign),
@@ -915,6 +963,8 @@ class JobCoordinator:
 
     @_serialized
     def delete(self, job_id):
+        if any(v['job'] == job_id for v in self.traffic.data['leases'].values()):
+            raise JobError("교통 예약이 남은 작업은 삭제할 수 없습니다. 로봇의 정지·퇴장을 확인하세요.")
         self._store.delete(job_id)
 
     # -- fleet 이벤트 (paho 스레드) --------------------------------
@@ -930,6 +980,29 @@ class JobCoordinator:
                 self._step_multi(job)
             else:
                 self._advance(job, event.record.state)
+        self.tick_traffic()
+
+    @_serialized
+    def tick_traffic(self):
+        """주기 루프와 State 수신이 같은 락 아래서 허가를 갱신한다."""
+        self.traffic.reconcile()
+        if not getattr(self._mqtt, "connected", True):
+            return
+        for job in sorted(self._store.list(), key=lambda j: (j.dispatched_at or j.created_at, j.job_id)):
+            if not job.traffic or job.status not in (JobStatus.ASSIGNED, JobStatus.WORKING):
+                continue
+            if job.plan and (job.stage >= len(job.plan) or job.plan[job.stage]['t'] != 'order'):
+                continue
+            order = self.traffic.update(job)
+            if order is not None:
+                job.order_update_id = order.order_update_id
+                job.order_snapshot = order.model_dump(mode="json")
+                self._store.save(job)
+                try:
+                    self._mqtt.publish_order(order)
+                except Exception as exc:
+                    job.error = f"통행 허가 전송 확인 필요: {exc}"
+                    self._store.save(job)
 
     def _advance(self, job: Job, state: Optional[State]) -> None:
         if state is None:
@@ -962,7 +1035,8 @@ class JobCoordinator:
                 elif not (state.last_node_id == node["node_id"] or
                           state.last_node_sequence_id > node["sequence_id"]):
                     break
-                done += 1
+                if not job.traffic or node["node_id"] in job.traffic["sources"]:
+                    done += 1
             if first_ack:
                 self._store.save(job)
             if done != job.done_commands:

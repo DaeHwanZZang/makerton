@@ -1,17 +1,24 @@
 'use strict';
 // 편집 좌표는 world 단위로 보관하고, 그릴 때만 화면 좌표로 변환한다.
 // 다른 사용자가 저장한 버전 위에 덮어쓰지 않도록 시작 시 버전을 고정한다.
-// 픽업스테이션 모드는 같은 사각형 편집에 픽업 node(점+방향)를 더해 한 요청으로 저장한다.
+// 픽업스테이션 모드는 같은 사각형 편집에 픽업 node·반납 node(점+방향)를 더해 한 요청으로 저장한다.
 window.zoneEditor = (() => {
   const panel = $('#zoneEditor');
   const form = $('#zoneForm');
-  const PICKUP_COLOR = '#f0a35e';
+  const geometry = window.zoneGeometry;
+  const PICKUP_COLOR = '#f0a35e', RETURN_COLOR = '#5ec8f0';
   let active = false, busy = false, zoneId = null, baseVersion = null;
   let rect = null, gesture = null;
-  let pickup = false, node = null, step = 'zone', nodeGesture = null;
+  // step: zone | node(픽업) | return(반납). 두 node 는 같은 방식(클릭=위치, 드래그=방향)으로 편집한다.
+  let pickup = false, node = null, ret = null, step = 'zone', nodeGesture = null;
+  let gates = [];
   const field = name => form.elements.namedItem(name);
-  const dimensionKeys = ['x', 'y', 'width', 'height'];
+  const dimensionKeys = ['x', 'y', 'width', 'height', 'rotation'];
   const nodeKeys = ['nodeX', 'nodeY', 'nodeHeading'];
+  const returnKeys = ['returnX', 'returnY', 'returnHeading'];
+  const editing = () => step === 'node' ? node : ret;
+  const setEditing = value => { if (step === 'node') node = value; else ret = value; };
+  const nodeStep = () => pickup && (step === 'node' || step === 'return');
   const minSize = () => view.meta.resolution;
   const bounds = () => ({
     left: view.meta.origin_x, top: view.meta.origin_y,
@@ -40,46 +47,62 @@ window.zoneEditor = (() => {
   }
   function handles() {
     if (!rect) return [];
-    const a = point(rect), b = point({x: rect.x + rect.width, y: rect.y + rect.height});
-    return [
-      ['nw', a.x, a.y], ['n', (a.x+b.x)/2, a.y], ['ne', b.x, a.y],
-      ['e', b.x, (a.y+b.y)/2], ['se', b.x, b.y], ['s', (a.x+b.x)/2, b.y],
-      ['sw', a.x, b.y], ['w', a.x, (a.y+b.y)/2],
-    ];
+    const entries=[['nw',-1,-1],['n',0,-1],['ne',1,-1],['e',1,0],
+      ['se',1,1],['s',0,1],['sw',-1,1],['w',-1,0]];
+    const result=entries.map(([id,x,y])=>{
+      const p=point(geometry.world({x:x*rect.width/2,y:y*rect.height/2},rect));
+      return [id,p.x,p.y];
+    });
+    const p=point(geometry.world({x:0,y:-rect.height/2-30*view.meta.resolution/view.scale},rect));
+    result.push(['rotate',p.x,p.y]);
+    return result;
   }
   function hint() {
     if (busy) return '맵을 저장하고 있습니다…';
     if (pickup && step === 'node') return node
       ? '클릭해 픽업 지점을 옮기거나, 드래그·숫자 입력으로 로봇 방향을 조절하세요. 구역 밖도 됩니다.'
       : '로봇이 정지해 적재할 위치를 클릭하고, 드래그해 방향을 정하세요.';
-    return rect ? '안쪽을 드래그해 이동하고, 핸들을 드래그해 크기를 조절하세요.'
+    if (pickup && step === 'return') return ret
+      ? '클릭해 반납 지점을 옮기거나, 드래그·숫자 입력으로 방향을 조절하세요. 픽업 지점과 1 m 이상 떨어뜨리세요.'
+      : '배송을 마친 로봇이 빈 트레이를 내려놓을 위치를 클릭하고, 드래그해 방향을 정하세요.';
+    return rect ? '안쪽 드래그: 이동 · 사각 핸들: 크기 · 위쪽 원형 핸들: 회전. 각도도 입력할 수 있습니다.'
       : pickup ? '적재 장치·컨베이어가 있는 영역을 드래그해 사각형으로 그리세요.'
       : '맵에서 드래그해 사각형을 만드세요.';
   }
   function sync() {
+    $('#trafficGateFields').hidden = pickup || field('type').value !== 'occupancy';
+    if (!pickup) $('#zoneDescription').textContent = field('type').value === 'occupancy'
+      ? '한 대씩 통과합니다. 대기·출구는 차체 여유를 두고 배치하세요. 저장하면 새 맵 버전을 로봇에 전달합니다.'
+      : '저장하면 새 맵 버전을 활성화하고 로봇에 전달합니다. 엘리베이터 구역은 위치 표시용입니다.';
+    $('#addTrafficGate').disabled = busy;
+    $('#trafficGateRows').querySelectorAll('input,select,button').forEach(control => { control.disabled = busy; });
     for (const k of dimensionKeys) {
       field(k).disabled = !rect || busy;
-      field(k).value = rect ? Number(rect[k].toFixed(6)) : '';
+      field(k).value = rect ? Number(rect[k].toFixed(9)) : '';
     }
-    for (const k of nodeKeys) field(k).disabled = !node || busy;
-    if (node) {
-      field('nodeX').value = Number(node.x.toFixed(6));
-      field('nodeY').value = Number(node.y.toFixed(6));
-      field('nodeHeading').value = Number((node.theta * 180 / Math.PI).toFixed(3));
+    for (const [keys, value] of [[nodeKeys, node], [returnKeys, ret]]) {
+      for (const k of keys) field(k).disabled = !value || busy;
+      if (value) {
+        field(keys[0]).value = Number(value.x.toFixed(6));
+        field(keys[1]).value = Number(value.y.toFixed(6));
+        field(keys[2]).value = Number((value.theta * 180 / Math.PI).toFixed(3));
+      }
     }
-    $('#saveZone').disabled = !rect || busy || (pickup && !node);
+    $('#saveZone').disabled = !rect || busy || (pickup && (!node || !ret));
     $('#cancelZone').disabled = busy;
     // 픽업스테이션 이름은 목적지 이름 변경으로 바꾼다 (작업·프리셋 참조를 함께 갱신).
     field('name').disabled = busy || (pickup && !!zoneId);
     field('type').disabled = busy;
     $('#pickupStepZone').disabled = busy;
     $('#pickupStepNode').disabled = busy || !rect;
+    $('#pickupStepReturn').disabled = busy || !rect || !node;
     $('#pickupStepZone').classList.toggle('active', pickup && step === 'zone');
     $('#pickupStepNode').classList.toggle('active', pickup && step === 'node');
+    $('#pickupStepReturn').classList.toggle('active', pickup && step === 'return');
     $('#zoneHint').textContent = hint();
   }
   function cancel() {
-    active = false; rect = null; gesture = null; node = null; nodeGesture = null; pickup = false;
+    active = false; rect = null; gesture = null; node = null; ret = null; nodeGesture = null; pickup = false;
     panel.hidden = true;
     canvas.classList.remove('zone-drawing');
     $('#addZone').classList.remove('active');
@@ -101,14 +124,20 @@ window.zoneEditor = (() => {
     active = true; zoneId = zone?.zone_id || null; baseVersion = view.version;
     rect = zone ? rectangle(zone.polygon) : null;
     node = station?.node ? {...station.node} : null;
-    step = 'zone';
+    ret = station?.return_node ? {...station.return_node} : null;
+    // 반납 node 도입 전 스테이션은 반납 지점 지정부터 시작한다.
+    step = station && node && !ret ? 'return' : 'zone';
     form.reset();
+    gates = structuredClone(zone?.gates || []);
+    renderGates();
     field('name').value = station?.name || zone?.name || '';
     field('type').value = pickup ? 'prohibit' : (zone?.type || 'prohibit');
     $('#zoneTypeLabel').hidden = pickup;
     $('#pickupNodeFields').hidden = !pickup;
     $('#zoneDescription').textContent = pickup
-      ? '구역은 적재 장치 위치를 알리는 표시용이며 주행을 막지 않습니다. 저장하면 새 맵 버전을 로봇에 전달합니다.'
+      ? (station && !station.return_node
+        ? '이 스테이션에는 반납 지점이 없어 배송에 쓸 수 없습니다. 반납 지점을 지정해 저장하세요.'
+        : '구역은 적재 장치 위치를 알리는 표시용이며 주행을 막지 않습니다. 구역을 바꾸면 새 맵 버전을 로봇에 전달합니다.')
       : '저장하면 새 맵 버전을 활성화하고 로봇에 전달합니다. 엘리베이터 구역은 위치 표시용입니다.';
     $('#saveZone').textContent = pickup ? '픽업스테이션 저장' : '구역 저장';
     $('#zoneEditorTitle').textContent = pickup
@@ -126,36 +155,33 @@ window.zoneEditor = (() => {
   }
   function rectangle(polygon) {
     // 벤더의 임의 다각형을 사각형으로 바꾸지 않는다.
-    const pts = polygon.length === 5 ? polygon.slice(0,4) : polygon;
-    if (pts.length !== 4) return null;
-    const xs = [...new Set(pts.map(p=>p.x))], ys = [...new Set(pts.map(p=>p.y))];
-    if (xs.length !== 2 || ys.length !== 2 || new Set(pts.map(p=>`${p.x},${p.y}`)).size !== 4) return null;
-    return {x: Math.min(...xs), y: Math.min(...ys), width: Math.abs(xs[1]-xs[0]), height: Math.abs(ys[1]-ys[0])};
+    return geometry.fromPolygon(polygon);
   }
   function setStep(next) {
-    if (busy || (next === 'node' && !rect)) return;
+    if (busy || (next !== 'zone' && !rect) || (next === 'return' && !node)) return;
     step = next; sync(); draw();
   }
   function pointerDown(e) {
     if (!active) return false;
     if (busy) return true;
     const p = mouse(e);
-    if (pickup && step === 'node') {
+    if (nodeStep()) {
       const w = world(p);
       if (!inBounds(w)) { notify('맵 범위 안의 위치를 선택하세요.'); return true; }
-      nodeGesture = {screen: p, old: node ? {...node} : null};
-      node = {x: w.x, y: w.y, theta: node?.theta || 0};
+      const current = editing();
+      nodeGesture = {screen: p, old: current ? {...current} : null};
+      setEditing({x: w.x, y: w.y, theta: current?.theta || 0});
       canvas.setPointerCapture(e.pointerId);
       sync(); draw(); return true;
     }
-    const w = bounded(world(p));
+    const w = world(p);
     const handle = handles().find(([,x,y])=>Math.abs(x-p.x)<=8 && Math.abs(y-p.y)<=8);
     if (rect && handle) gesture = {mode: handle[0], start: w, rect: {...rect}};
-    else if (rect && w.x>=rect.x && w.x<=rect.x+rect.width && w.y>=rect.y && w.y<=rect.y+rect.height)
+    else if (rect && Math.abs(geometry.local(w,rect).x)<=rect.width/2 && Math.abs(geometry.local(w,rect).y)<=rect.height/2)
       gesture = {mode:'move', start:w, rect:{...rect}};
     else if (!rect) {
       if (!inBounds(world(p))) return true;
-      gesture = {mode:'create', start:w, rect:null};
+      gesture = {mode:'create', start:bounded(w), rect:null};
     } else return true;
     canvas.setPointerCapture(e.pointerId);
     return true;
@@ -165,24 +191,24 @@ window.zoneEditor = (() => {
     if (busy) return true;
     if (nodeGesture) {
       const p = mouse(e), dx = p.x - nodeGesture.screen.x, dy = p.y - nodeGesture.screen.y;
-      if (Math.hypot(dx, dy) > 6) node.theta = Math.atan2(dy, dx);
+      if (Math.hypot(dx, dy) > 6) editing().theta = Math.atan2(dy, dx);
       sync(); draw(); return true;
     }
     if (!gesture) return true;
-    const p = bounded(world(mouse(e))), g = gesture, b = bounds(), min = minSize();
+    const raw = world(mouse(e)), p = bounded(raw), g = gesture, b = bounds(), min = minSize();
     if (g.mode === 'create') {
       rect = {x: Math.min(p.x,g.start.x), y: Math.min(p.y,g.start.y),
-        width: Math.abs(p.x-g.start.x), height: Math.abs(p.y-g.start.y)};
+        width: Math.abs(p.x-g.start.x), height: Math.abs(p.y-g.start.y), rotation:0};
     } else if (g.mode === 'move') {
-      rect = {...g.rect, x: clamp(g.rect.x+p.x-g.start.x,b.left,b.right-g.rect.width),
-        y: clamp(g.rect.y+p.y-g.start.y,b.top,b.bottom-g.rect.height)};
+      rect = geometry.move(g.rect,raw.x-g.start.x,raw.y-g.start.y,b);
+    } else if (g.mode === 'rotate') {
+      const c=geometry.center(g.rect);
+      const delta=Math.atan2(raw.y-c.y,raw.x-c.x)-Math.atan2(g.start.y-c.y,g.start.x-c.x);
+      const candidate={...g.rect,rotation:wrap(g.rect.rotation*Math.PI/180+delta)*180/Math.PI};
+      if(geometry.fits(candidate,b))rect=candidate;
     } else {
-      let left=g.rect.x, top=g.rect.y, right=left+g.rect.width, bottom=top+g.rect.height;
-      if (g.mode.includes('w')) left=Math.min(p.x,right-min);
-      if (g.mode.includes('e')) right=Math.max(p.x,left+min);
-      if (g.mode.includes('n')) top=Math.min(p.y,bottom-min);
-      if (g.mode.includes('s')) bottom=Math.max(p.y,top+min);
-      rect={x:left,y:top,width:right-left,height:bottom-top};
+      const candidate=geometry.resize(g.rect,g.mode,raw,min);
+      if(geometry.fits(candidate,b))rect=candidate;
     }
     sync(); draw(); return true;
   }
@@ -191,6 +217,8 @@ window.zoneEditor = (() => {
     if (nodeGesture) {
       pointerMove(e);
       nodeGesture = null;
+      // 픽업 지점을 처음 찍었으면 반납 지점 지정으로 넘어간다.
+      if (step === 'node' && !ret) step = 'return';
       if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
       sync(); draw();
       return true;
@@ -208,11 +236,11 @@ window.zoneEditor = (() => {
     return true;
   }
   function pointerCancel() {
-    if (nodeGesture) { node = nodeGesture.old; nodeGesture = null; sync(); draw(); return; }
+    if (nodeGesture) { setEditing(nodeGesture.old); nodeGesture = null; sync(); draw(); return; }
     if (!gesture) return;
     rect=gesture.rect; gesture=null; sync(); draw();
   }
-  function drawNode(color) {
+  function drawNode(node, color, label, current) {
     if (!node) return;
     const p = point(node);
     if (rect) {
@@ -222,33 +250,47 @@ window.zoneEditor = (() => {
       ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(p.x, p.y); ctx.stroke(); ctx.restore();
     }
     ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(node.theta);
-    ctx.fillStyle = '#152334'; ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.fillStyle = '#152334'; ctx.strokeStyle = color; ctx.lineWidth = current ? 3 : 2;
     ctx.beginPath(); ctx.arc(0, 0, 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(55, 0); ctx.stroke(); ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(55, 0); ctx.lineTo(45, -6); ctx.lineTo(45, 6); ctx.closePath();
     ctx.fillStyle = color; ctx.fill();
     ctx.restore();
-    text('픽업 지점', p.x + 13, p.y - 13, color);
+    // 두 node 가 가까워도 읽히도록 반납 표식은 아래쪽에 쓴다.
+    text(label, p.x + 13, label.startsWith('⇱') ? p.y + 24 : p.y - 13, color);
   }
   function drawEditor() {
     if (!active || !view.image) return;
-    const color = pickup ? PICKUP_COLOR : field('type').value==='elevator' ? '#ab9aee' : '#f2848c';
+    const color = pickup ? PICKUP_COLOR : field('type').value==='occupancy' ? '#59c8be' : field('type').value==='elevator' ? '#ab9aee' : '#f2848c';
     if (rect) {
-      const a=point(rect), b=point({x:rect.x+rect.width,y:rect.y+rect.height});
+      const pts=geometry.corners(rect).map(point), a=pts[0];
       ctx.save(); ctx.fillStyle=color+'45'; ctx.strokeStyle=color; ctx.lineWidth=2;
-      ctx.fillRect(a.x,a.y,b.x-a.x,b.y-a.y);
-      ctx.setLineDash([6,4]); ctx.strokeRect(a.x,a.y,b.x-a.x,b.y-a.y); ctx.setLineDash([]);
-      if (!pickup || step === 'zone') for (const [,x,y] of handles()) {
-        ctx.fillStyle='#f2f5fb'; ctx.fillRect(x-4,y-4,8,8); ctx.strokeRect(x-4,y-4,8,8);
+      ctx.beginPath();pts.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.closePath();ctx.fill();
+      ctx.setLineDash([6,4]);ctx.stroke();ctx.setLineDash([]);
+      if (!pickup || step === 'zone') for (const [id,x,y] of handles()) {
+        ctx.fillStyle='#f2f5fb';
+        if(id==='rotate'){
+          const [,nx,ny]=handles().find(h=>h[0]==='n');
+          ctx.beginPath();ctx.moveTo(nx,ny);ctx.lineTo(x,y);ctx.stroke();
+          ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fill();ctx.stroke();
+        }else{ctx.fillRect(x-4,y-4,8,8);ctx.strokeRect(x-4,y-4,8,8);}
       }
-      text(`${rect.width.toFixed(2)} × ${rect.height.toFixed(2)} m`, a.x, a.y-12, color);
+      text(`${rect.width.toFixed(2)} × ${rect.height.toFixed(2)} m · ${rect.rotation.toFixed(1)}°`, a.x, a.y-12, color);
       ctx.restore();
     }
-    if (pickup) drawNode(color);
+    if (pickup) {
+      drawNode(node, color, '⇲ 픽업', step === 'node');
+      drawNode(ret, RETURN_COLOR, '⇱ 반납', step === 'return');
+    } else if (field('type').value === 'occupancy') {
+      gates.forEach((g,i) => {
+        drawNode(g.wait, color, `대기 ${i+1}`, false);
+        drawNode(g.exit, '#e2bd79', `출구 ${i+1}`, false);
+      });
+    }
   }
   async function deleteStation(station) {
     const name = station.name || station.station_id;
-    if (!confirm(`픽업스테이션 '${name}'의 구역과 픽업 지점을 함께 삭제할까요?`)) return;
+    if (!confirm(`픽업스테이션 '${name}'의 구역과 픽업·반납 지점을 함께 삭제할까요?`)) return;
     const url = `${siteURL()}/maps/${enc(station.map_id)}/pickup-stations/${enc(station.station_id)}?base_version=${enc(view.version)}`;
     const result = await request(url, 'DELETE');
     $('#closeInfo').click(); await refreshSite();
@@ -257,12 +299,14 @@ window.zoneEditor = (() => {
   function actions(box, zone) {
     if (zone.type === 'pickup') {
       const station = (app.pickupStations || []).find(s => s.station_id === zone.zone_id);
-      if (station?.status === 'ok' && rectangle(zone.polygon))
-        box.append(button('픽업스테이션 편집', () => start(zone, station)));
+      // 반납 지점만 없는 스테이션(도입 전)은 편집으로 반납 지점을 추가한다.
+      const onlyReturn = station && station.problems?.length === 1 && !station.return_node && station.node;
+      if ((station?.status === 'ok' || onlyReturn) && rectangle(zone.polygon))
+        box.append(button(onlyReturn ? '반납 지점 추가' : '픽업스테이션 편집', () => start(zone, station)));
       if (station) box.append(button('픽업스테이션 삭제', () => deleteStation(station), 'danger'));
       return;
     }
-    if (['prohibit','elevator'].includes(zone.type) && rectangle(zone.polygon))
+    if (['prohibit','elevator','occupancy'].includes(zone.type) && rectangle(zone.polygon))
       box.append(button('구역 편집',()=>start(zone)));
     box.append(button('구역 삭제',async()=>{
       if (!confirm(`'${zone.name||zone.zone_id}' 구역을 삭제하고 새 맵 버전을 적용할까요?`)) return;
@@ -276,35 +320,73 @@ window.zoneEditor = (() => {
     const values=Object.fromEntries(dimensionKeys.map(n=>[n,Number(field(n).value)]));
     if (dimensionKeys.some(n=>field(n).value==='' || !Number.isFinite(values[n]))) return;
     if (values.width < minSize() || values.height < minSize()) return;
-    const b=bounds();
-    if(values.x<b.left || values.y<b.top || values.x+values.width>b.right || values.y+values.height>b.bottom)return;
+    if(!geometry.fits(values,bounds()))return;
     rect=values; draw();
   });
-  for (const k of nodeKeys) field(k).addEventListener('input', () => {
-    if (!node || busy) return;
-    const x = Number(field('nodeX').value), y = Number(field('nodeY').value), deg = Number(field('nodeHeading').value);
-    if (nodeKeys.some(n => field(n).value === '') || ![x, y, deg].every(Number.isFinite) || !inBounds({x, y})) return;
-    node = {x, y, theta: wrap((deg % 360) * Math.PI / 180)}; draw();
-  });
-  field('type').addEventListener('change',()=>draw());
+  for (const [keys, kind] of [[nodeKeys, 'node'], [returnKeys, 'return']]) for (const k of keys)
+    field(k).addEventListener('input', () => {
+      if (!(kind === 'node' ? node : ret) || busy) return;
+      const [x, y, deg] = keys.map(n => Number(field(n).value));
+      if (keys.some(n => field(n).value === '') || ![x, y, deg].every(Number.isFinite) || !inBounds({x, y})) return;
+      const value = {x, y, theta: wrap((deg % 360) * Math.PI / 180)};
+      if (kind === 'node') node = value; else ret = value;
+      draw();
+    });
+  function renderGates() {
+    const box = $('#trafficGateRows'); box.replaceChildren();
+    const choices = [...app.locations.filter(l => l.map_id === app.map).map(l => ({name:l.name, pose:{x:l.x,y:l.y,theta:l.theta}})),
+      ...(view.annotations.locations || []).map(l => ({name:`맵: ${l.name}`,pose:l.pose}))];
+    gates.forEach((gate, index) => {
+      const row = el('div');
+      row.append(el('strong', `방향 ${index+1}`));
+      for (const [key, title] of [['wait','대기 node'], ['exit','출구 node']]) {
+        const labelNode = el('label', title), select = el('select');
+        select.append(new Option('선택하세요', ''));
+        if (gate[key]) {
+          select.append(new Option(`저장 좌표 (${gate[key].x.toFixed(2)}, ${gate[key].y.toFixed(2)})`, 'saved'));
+          select.value = 'saved';
+        }
+        choices.forEach((c,i) => select.append(new Option(c.name, String(i))));
+        select.onchange = () => { gate[key] = select.value === 'saved' ? gate[key]
+          : select.value === '' ? null : {...choices[Number(select.value)].pose}; draw(); };
+        labelNode.append(select); row.append(labelNode);
+      }
+      row.append(button('방향 삭제', () => { gates.splice(index,1); renderGates(); draw(); }));
+      box.append(row);
+    });
+  }
+  $('#addTrafficGate').onclick = () => {
+    gates.push({gate_id:`gate-${Date.now()}-${Math.random().toString(16).slice(2)}`,wait:null,exit:null}); renderGates();
+  };
+  field('type').addEventListener('change',()=>{ sync(); draw(); });
   $('#pickupStepZone').onclick = () => setStep('zone');
   $('#pickupStepNode').onclick = () => setStep('node');
+  $('#pickupStepReturn').onclick = () => setStep('return');
   form.addEventListener('submit',e=>{
     e.preventDefault();
     run(async()=>{
       if (!rect || busy) return;
       const dimensions=Object.fromEntries(dimensionKeys.map(k=>[k,Number(field(k).value)]));
+      if(dimensionKeys.some(k=>field(k).value===''||!Number.isFinite(dimensions[k])) || !geometry.fits(dimensions,bounds()))
+        throw new Error('회전한 구역의 모든 꼭짓점이 맵 안에 있어야 합니다.');
       const name = field('name').value.trim();
       if (!name) throw new Error(pickup ? '픽업스테이션 이름을 입력하세요.' : '구역 이름을 입력하세요.');
       let url, method, data, done;
       if (pickup) {
         if (!node) throw new Error('픽업 지점을 지정하세요.');
-        data = {base_version: baseVersion, zone: dimensions, node: {x: node.x, y: node.y, theta: wrap(node.theta)}};
+        if (!ret) throw new Error('반납 지점을 지정하세요.');
+        data = {base_version: baseVersion, zone: dimensions,
+                node: {x: node.x, y: node.y, theta: wrap(node.theta)},
+                return_node: {x: ret.x, y: ret.y, theta: wrap(ret.theta)}};
         if (!zoneId) data.name = name;
         url = `${mapURL()}/pickup-stations${zoneId ? '/' + enc(zoneId) : ''}`;
         done = '픽업스테이션을 저장했습니다.';
       } else {
         data={base_version:baseVersion,name,type:field('type').value,...dimensions};
+        if (data.type === 'occupancy') {
+          if (!gates.length || gates.some(g => !g.wait || !g.exit)) throw new Error('방향별 대기 node와 출구 node를 선택하세요.');
+          data.gates = gates;
+        }
         url=`${mapURL()}/zones${zoneId?'/'+enc(zoneId):''}`;
         done = '구역을 저장하고 새 맵을 적용했습니다.';
       }
@@ -315,7 +397,11 @@ window.zoneEditor = (() => {
         const result = await request(url,method,data);
         cancel(); await refreshSite(); Object.assign(view,camera); draw();
         notify(done);
-        if (result.warnings?.length) console.info('맵 편집 경고', result.warnings);
+        if (result.warnings?.length) {
+          console.info('맵 편집 경고', result.warnings);
+          const gap = result.warnings.find(w => w.includes('간격'));
+          if (gap) notify(`${done} 주의: ${gap}`);
+        }
       } finally {busy=false; if(active)sync();}
     });
   });

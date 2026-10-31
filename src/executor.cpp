@@ -624,6 +624,21 @@ void OrderExecutor::tick_action(double dt) {
 
 void OrderExecutor::tick_straight(double dt, const std::vector<DynamicObstacle>& detected) {
     const StraightMotion m = *straight_;
+    if (map && !map->occupancy_zones.empty()) {
+        const std::vector<std::string> empty;
+        const auto& allowed = current_index_ < (int)nodes_.size() ? nodes_[current_index_].allowed_zone_ids : empty;
+        const double d = std::hypot(m.tx-kinematics.x, m.ty-kinematics.y);
+        const int count = std::max(1, (int)std::ceil(d / 0.02));
+        for (int i = 0; i <= count; ++i) {
+            const double t = (double)i / count;
+            if (map->traffic_blocked(kinematics.x+t*(m.tx-kinematics.x), kinematics.y+t*(m.ty-kinematics.y),
+                                     std::hypot(robot_width, robot_length)/2+0.1, allowed)) {
+                raise_fatal(ErrorInfo{"TRAFFIC_BLOCKED", ErrorLevel::FATAL, "직선 이동이 미허가 점유 존을 통과합니다"});
+                kinematics.brake(dt);
+                return;
+            }
+        }
+    }
     if (!kinematics.straight_active()) kinematics.set_straight(m.tx, m.ty, m.speed);  // 시작, 또는 PAUSE 등에서 재개
     if (path_blocked_by(detected)) {  // 직선 구간은 우회하지 않는다. 비켜날 때까지 기다린다
         auto kin_state = kinematics.hold(dt);
@@ -772,10 +787,13 @@ std::vector<std::pair<double, double>> OrderExecutor::plan_segment_path(
     std::vector<std::pair<double, double>> full_path;
     std::pair<double, double> start = {kinematics.x, kinematics.y};
     for (auto& target : targets) {
-        auto seg = plan_path(*map, start, target, robot_width, robot_length, dynamic_obstacles);
+        const auto& allowed = nodes_[segment_[segment_wp_bounds_.size()]].allowed_zone_ids;
+        if ((centerline.enabled || path_refine.enabled) && !clearance_) clearance_ = std::make_unique<ClearanceField>(*map);
+        // 복도 중앙 주행은 동적 장애물 회피 경로에도 쓴다 (장애물은 grid 에서 막히고, 거리 장은 벽 기준 선호만 준다).
+        auto seg = plan_path(*map, start, target, robot_width, robot_length, dynamic_obstacles, &allowed,
+                             clearance_.get(), &centerline);
         // 동적 장애물 회피 경로는 다듬지 않는다 (거리 장이 정적 맵 기준이라 장애물을 모름).
-        if (path_refine.enabled && !dynamic_obstacles && seg.size() >= 2) {
-            if (!clearance_) clearance_ = std::make_unique<ClearanceField>(*map);
+        if (path_refine.enabled && !dynamic_obstacles && seg.size() >= 2 && map->occupancy_zones.empty()) {
             seg = refine_path(*map, *clearance_, start, seg, robot_width, path_refine);
         }
         full_path.insert(full_path.end(), seg.begin(), seg.end());

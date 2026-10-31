@@ -196,6 +196,7 @@ def build_annotations(
                     zone_id=str(entry.get("id") or entry.get("name")),
                     name=str(entry.get("name", "")),
                     type=ztype,
+                    gates=entry.get("gates", []),
                     polygon=[Point(x=float(p[0]), y=float(p[1])) for p in poly],
                 )
             )

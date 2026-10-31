@@ -1,6 +1,6 @@
 # FMS 서버와 웹 UI
 
-[프로젝트 시작 안내](../README.md) · [승강기와 층간 이동](../docs/elevators.md) · [개발 구조](../docs/architecture.md)
+[프로젝트 시작 안내](../README.md) · [승강기와 층간 이동](../docs/elevators.md) · [교통 제어](../docs/traffic.md) · [개발 구조](../docs/architecture.md)
 
 로봇의 MQTT 상태를 수집하고 현장·맵·목적지·작업·승강기를 관리하는 FastAPI 서버다.
 웹 UI는 서버의 `/`, API 문서는 `/docs`에서 제공한다. 프런트엔드 빌드나 외부 CDN은 필요 없다.
@@ -55,19 +55,23 @@ MQTT 연결 상태는 `/health`와 UI에서 확인한다. 다른 PC의 로봇을
 
 | 항목 | 조작 | 저장 결과 |
 |---|---|---|
-| 구역 | 드래그 생성, 8방향 핸들/숫자로 사각형 조절 | 새 맵 버전 활성화·전달 |
+| 구역 | 드래그 생성, 8방향 핸들로 크기 조절, 위쪽 원형 핸들/각도 입력으로 회전 | 새 맵 버전 활성화·전달 |
 | 목적지 | 클릭 위치, 드래그 방향, 좌표·각도 입력 | 현재 맵의 named location |
 | 도킹 스테이션 | 위치·방향과 전진/후진 진입 지정 | 목적지 + 물리 충전기, 새 맵 버전 |
-| 픽업스테이션 | 사각형 구역을 그린 뒤 픽업 지점 클릭·방향 지정 | 표시용 pickup 구역 + 픽업 지점, 새 맵 버전 |
+| 픽업스테이션 | 사각형 구역 → 픽업 지점 → 반납 지점 클릭·방향 지정 | 표시용 pickup 구역 + 픽업·반납 지점, 새 맵 버전 |
 
 웹 각도 입력은 **도(°)**이며 API의 `theta`는 **라디안**이다.
-구역은 `주행금지(prohibit)` 또는 `엘리베이터(elevator)`를 선택한다. `pickup` 구역은 픽업스테이션 메뉴로만 만든다.
+구역은 `주행금지(prohibit)`, `엘리베이터(elevator)`, `점유 존(occupancy)`을 선택한다. `pickup` 구역은 픽업스테이션 메뉴로만 만든다.
 주행금지는 grid에 OCCUPIED로 굽고, 엘리베이터는 층간 경로 계획에 쓸 주석으로 저장한다.
 감속/일방통행 유형은 표시만 하며 해당 주행 제어를 구현한 것은 아니다.
 기존 임의 다각형을 사각형으로 자동 변환하지 않는다.
+금지·승강기·점유·픽업 사각형 모두 중심 기준으로 회전하며, 저장된 회전 사각형도 다시 편집할 수 있다.
+X/Y는 회전 전 좌상단 좌표다. 양의 각도는 지도에서 시계 방향이며, 픽업·반납·대기·출구 node는 구역 회전에 따라 이동하지 않는다.
+구역 API의 선택 필드 `rotation`도 도 단위이며 기본값은 `0`이다. 저장은 기존과 같이 실제 꼭짓점 `polygon`으로 한다.
 
 객체 상세는 선택할 때만 연다. 로봇 팝업은 상태·배터리·현재 작업과 단계 진행률을 갱신하고,
-좌표·방향·맵 버전 등은 펼침 영역에 둔다. 오류·주의는 바로 표시하며 수신 지연 시 마지막 값임을 알린다.
+좌표·방향·맵 버전 등은 펼침 영역에 둔다. 보관소 배송 중인 로봇은 '현재 작업'에 배송 1건의 진행
+(`배송 J… · n/N단계`, 현재 단계·엘리베이터 대기 등 세부)과 [진행 상세] 버튼을 보인다([배송 진행](#배송-진행-표시)). 오류·주의는 바로 표시하며 수신 지연 시 마지막 값임을 알린다.
 편집 중 자동 갱신은 초안을 지우지 않고, 저장 중에는 화면 전환을 막는다.
 
 ### 목적지와 충전기
@@ -81,31 +85,55 @@ MQTT 연결 상태는 `/health`와 UI에서 확인한다. 다른 PC의 로봇을
 
 ### 픽업스테이션
 
-- 픽업스테이션은 **표시용 pickup 구역 1개 + 픽업 지점(node) 1개**다. ID는 `PS-…`이며 구역의 `zone_id`와 같다.
+- 픽업스테이션은 **표시용 pickup 구역 1개 + 픽업 지점(node) 1개 + 반납 지점(node) 1개**다. ID는 `PS-…`이며 구역의 `zone_id`와 같다.
+  픽업 지점에서 물품이 담긴 트레이를 싣고, 배송을 마친 로봇은 반납 지점에 빈 트레이(미배송 물품은 트레이째)를 내려놓는다.
 - 구역은 적재 장치·컨베이어 위치를 알리는 표시용이다. 굽지 않으므로 주행을 막지 않고, 진입 감지·장치 제어도 하지 않는다.
   장치가 통로를 막으면 원본 맵이나 주행금지구역으로 따로 표현한다.
-- 픽업 지점은 `type=pickup`, `zone_id`를 가진 named location이다. 구역 밖(인접)이어도 되며 맵 범위 안 FREE 셀이어야 한다.
-  FREE 셀은 로봇이 실제로 도달할 수 있다는 보장이 아니다.
-- 생성은 새 맵 버전을 준비 → 픽업 지점 저장 → 활성화 순서다. 픽업 지점만 옮기면 맵 버전을 바꾸지 않는다.
-- 이름은 **목적지·도킹**의 이름 변경으로 바꾼다(스테이션 ID 유지). 일반 목적지·구역 API로 픽업 지점 생성·삭제·위치 변경, pickup 구역 수정·삭제는 거절한다.
+- 픽업 지점은 `type=pickup`, 반납 지점은 `type=tray_return`이며 둘 다 `zone_id`를 가진 named location이다.
+  구역 밖(인접)이어도 되며 맵 범위 안 FREE 셀이어야 한다. FREE 셀은 로봇이 실제로 도달할 수 있다는 보장이 아니다.
+  두 지점이 같은 셀이면 거절하고, 1 m 미만이면 경고한다(로봇 여러 대 운영 시 겹침).
+- 생성은 새 맵 버전을 준비 → 두 지점 저장 → 활성화 순서다. 지점만 옮기면 맵 버전을 바꾸지 않는다.
+- 이름은 **목적지·도킹**에서 픽업 지점 이름을 바꾼다(스테이션 ID 유지). 반납 지점은 `{스테이션 이름} 반납`으로 함께 바뀐다.
+  일반 목적지·구역 API로 픽업·반납 지점 생성·삭제·위치·종류 변경, pickup 구역 수정·삭제는 거절한다.
 - 프리셋·미완료 작업·보관소 연동 설정이 참조하면 삭제를 거절한다(409). 진행 중 작업이 참조하면 픽업 지점 이동을 거절한다.
 - 목록 API는 활성 맵 구역과 `locations.json`을 대조한다. 중단 등으로 한쪽만 남은 스테이션은 `status=broken`과 사유를 보여주며 편집은 막고 삭제로 정리한다.
+  반납 지점이 없는 스테이션(반납 지점 도입 전)도 `broken`이며 배송에 쓰지 않는다. 이 경우만 구역 선택 → **반납 지점 추가**로 편집할 수 있다.
 - 보관소 연동 설정은 픽업스테이션 ID(`pickup_station_id`)로 적재·트레이 반납 지점을 참조한다. 이름이 바뀌어도 ID로 찾는다.
   일반 작업의 `pickup` 명령은 아직 스테이션 참조를 강제하지 않는다.
-- 미반납 물품이 있으면 스테이션 삭제·node 이동을 거절한다.
+- 미반납 물품·트레이가 있으면 스테이션 삭제·node 이동을 거절한다.
 
 ### 물품 장부 (cargo)
 
 보관소 배송의 물품은 FMS가 고유 ID를 부여해 `FMS_DATA_ROOT/cargo.json`에 관리한다.
 
 - `parcel_id`(`P-…`)는 `(보관소 ID, 접수번호)`마다 하나다. 재시도·재시작에도 같은 ID를 쓴다. `bundle_id`(`B-…`)는 물품 2개 묶음마다 새로 만든다.
-- 로봇 적재부는 `TRAY_A`, `TRAY_B` 두 트레이이며 트레이 하나에 물품 하나다. 최종 묶음 확정 때 ID·묶음·트레이 배정을 저장한 뒤 PICK을 발행한다.
+- 로봇 적재부는 `TRAY_A`, `TRAY_B` 두 트레이 칸이며 트레이 하나에 물품 하나다. 트레이는 **탈착식**이다: 픽업 지점에서 물품이 담긴
+  트레이를 싣고 반납 지점에 빈 트레이를 내려놓는다. 물리 트레이 개체 ID는 추적하지 않는다(칸 이름만).
+  최종 묶음 확정 때 ID·묶음·트레이 배정을 저장한 뒤 PICK을 발행한다.
 - 상태: `planned → loading → onboard → unloading → delivered`, 복귀 후 남은 물품은 `returned`, 실리지 않은 계획은 `canceled`.
   근거는 로봇이 보고한 PICK/DROP의 RUNNING/FINISHED다. FINISHED 없이 끝나면 `unknown`이며 운영자가 실물을 확인해 정정한다.
   시뮬레이터의 시간 기반 액션 완료이며 적재 센서로 확인한 값이 아니다.
 - 두 PICK이 모두 FINISHED여야 출발한다. DROP은 물품마다 따로 하며 FINISHED 뒤에만 그 물품을 해당 작업 위치의 바닥 물품으로 맵에 표시한다.
-- 복귀 후 픽업 node에서 트레이 반납 DROP(`payload_id=TRAY_RETURN:{bundle_id}`)이 FINISHED가 되면 남은 물품은 반납, 트레이는 비고 묶음이 닫힌다.
-- 트레이가 비지 않은 로봇은 새 묶음을 받지 않는다. 로봇 상세 팝업에 두 트레이 상태가 표시된다.
+- 배송 후 반납 지점에서 칸마다 반납 DROP(`payload_id=TRAY_RETURN:{bundle_id}:{TRAY_A|TRAY_B}`)을 한다. 칸별 FINISHED가 되면
+  그 칸은 비고, 트레이째 돌아온 미배송 물품은 `returned`다. 두 칸이 모두 비면 묶음이 닫힌다.
+- 칸 상태: `none`(트레이 없음) · `reserved` · `loading`/`loaded` · `unloading`/`empty_tray`(빈 트레이) · `returning` · `unknown`.
+  반납 DROP이 FINISHED 없이 끝나면 반납 중이던 칸은 `unknown`이며 운영자가 적재물을 대조한 뒤 복귀(재반납)시킨다.
+- 두 칸이 모두 `none`이 아닌 로봇은 새 묶음을 받지 않는다(배송을 다 마쳤어도 빈 트레이 반납 전). 로봇 상세 팝업에 두 칸 상태가 표시된다.
+
+### 배송 진행 표시
+
+보관소 배송 1건(로봇 배정 → 픽업 지점 이동 → 최종 묶음 확정 → 트레이 적재 → 세대별 이동·하차 → 반납 지점 이동 → 트레이 반납 → 충전 스테이션 도킹)을
+하나의 배송 작업으로 보여준다. 실행은 여전히 하위 작업 여러 개다(묶음이 로봇 도착 후 확정되므로).
+
+- 서버(`delivery_progress.py`)가 배송마다 단계 목록(`done/active/pending/failed/unknown`)을 계산한다. 묶음 확정 전에는 예상 목록으로 그린다.
+  진행 중 단계에는 하위 작업의 현재 stage(엘리베이터 호출 대기·탑승 등)를 붙인다. 차단되면 그 단계가 `failed`이고 사유가 표시된다.
+- 배송 레코드의 `timeline`에 단계 전환 시각을 남긴다. 진행 상세 창의 단계 시각·전환 기록에 쓴다.
+- 로봇 팝업: 현재 작업 카드 + [진행 상세] 창(단계·두 칸·전환 기록·하위 작업, 차단 시 보관소 화면 링크). 1.5초 주기 갱신.
+- 작업 게시판: 배송 1건이 한 행이다(단계 수·현재 단계·방문 순서). ▸로 펼치면 하위 작업이 들여쓰기로 보이고, 최상위 목록에서는 숨긴다.
+  [현재 단계 취소]는 진행 중 하위 작업을 취소한다 — 배송은 차단되고 로봇 예약은 유지되며 운영자가 대조 후 복귀시킨다. 완료 배송 행도 남는다.
+- 보관소 배송 화면도 같은 단계 목록을 보인다.
+- 배정 대기인데 세대 목적지 연결이 없으면 배송 행이 **확인 필요**(`progress.status=attention`)로 표시되고 사유가 보인다.
+  세대를 연결하면 이어서 진행하고, [배송 취소]를 누르면 갈 수 없는 세대 물품은 보관소가 직접 수령으로 바꾼 뒤 나머지로 새 배송을 만든다.
 
 ## 맵 입력과 버전
 
@@ -190,10 +218,10 @@ assigned는 로봇 수신 확인 전에도 예약을 유지한다. assigned/work
 | `.../maps/{map}/locations`, `/docking-stations` | POST | 맵에서 직접 추가, base_version 검사 |
 | `.../maps/{map}/zones` / `.../zones/{id}` | POST / PUT·DELETE | 사각형 구역, base_version 검사 |
 | `/sites/{site}/pickup-stations` | GET | 픽업스테이션 목록과 연결 상태(ok/broken) |
-| `.../maps/{map}/pickup-stations` / `.../pickup-stations/{id}` | POST / PUT·DELETE | 구역+픽업 지점 동시 편집, base_version 검사 |
+| `.../maps/{map}/pickup-stations` / `.../pickup-stations/{id}` | POST / PUT·DELETE | 구역+픽업·반납 지점 동시 편집 (`node`, `return_node` 필수), base_version 검사 |
 | `/sites/{site}/parcels` / `.../parcels/{id}` | GET | 물품 장부·이력 (`?status=`) |
 | `.../parcels/{id}/resolve` | POST | `{result: onboard\|delivered\|returned\|not_loaded, reason}` 운영자 정정 |
-| `/sites/{site}/delivery-bundles`, `/sites/{site}/cargo` | GET | 묶음 진행 / 화면용 물품·묶음·로봇 트레이 |
+| `/sites/{site}/delivery-bundles`, `/sites/{site}/cargo` | GET | 묶음 진행 / 화면용 물품·묶음·로봇 트레이·배송 진행(`deliveries[].progress`, `timeline`) |
 | `/robots/{id}/cargo` | GET | 로봇 두 트레이의 현재 물품 |
 | `/sites/{site}/presets` / `.../presets/{id}` | GET·POST / PUT·DELETE | 작업 프리셋 |
 | `.../presets/{id}/publish` | POST | `{}` 자동 배정 / `{"robot_id":"AMR-001"}` 직접 배정 |
@@ -260,7 +288,8 @@ sites/{site_id}/
 .venv/bin/python -m pytest fms_server/tests/ -q
 ```
 
-트래픽 예약·데드락 처리와 자동 충전 스케줄링은 아직 골격이다.
+맵별 동시 이동 대수 제한과 점유 존의 한 대씩 통과는 [교통 제어](../docs/traffic.md)를 따른다.
+전체 경로의 중앙 예약·자동 교착 해소와 충전 스케줄링은 아직 제공하지 않는다.
 전체 제약과 해결 기록은 [알려진 문제](../docs/known-issues.md)에 모아 둔다.
 
 ## LastGate 보관소 배송
@@ -272,14 +301,26 @@ sites/{site_id}/
 
 | 메서드 | 경로 | 내용 |
 |---|---|---|
-| GET | `/api/v1/locker` | 설정과 배송 목록·상태·결과·오류·배송 묶음(`bundle`) |
-| PUT | `/api/v1/locker/config` | `{site_id,pickup_station_id:"PS-…",locker_id:"LG-01",households:{"101-101":"목적지"},pick_duration:2,drop_duration:2}`. 이전 방식 `pickup_target`(일반 목적지)과 둘 중 하나만 |
+| GET | `/api/v1/locker` | 설정과 배송 목록·상태·결과·오류·배송 묶음(`bundle`)·진행 단계(`progress`) |
+| PUT | `/api/v1/locker/config` | `{site_id,pickup_station_id:"PS-…",locker_id:"LG-01",households:{"101-101":"목적지"},pick_duration:2,drop_duration:2,charger_target:"auto",charge_min:30}`. 이전 방식 `pickup_target`(일반 목적지)과 둘 중 하나만. `charger_target`: `auto`·`off`·충전소 이름 |
 | POST | `/api/v1/locker/deliveries/{job_id}/return` | 차단된 배송의 적재물 대조 후 복귀. `{delivered_receipts:[],confirm_remaining_onboard:true}` |
+| POST | `/api/v1/locker/deliveries/{job_id}/cancel` | 로봇 배정 전(배정 대기) 배송 취소. `{reason}`. 보관소에 `JOB_REJECTED`(갈 수 없는 세대 물품 `unroutable`)를 보낸다. 로봇 예약 뒤면 409 |
 
 연동이 만든 작업은 `external_owner`에 보관소 Job ID를 저장한다. 직접 dispatch·삭제는 409이며 취소는 가능하다.
 작업 명령 `pickup`·`drop`은 목적지·양의 `duration`과 선택 `params.payload_id`를 받아 기존 PICK/DROP 액션으로 만든다.
 세대 목적지가 다른 맵이면 기존 승강기 경로를 사용한다. 접수·계정 원본은 LastGate SQLite가, 로봇 적재 장부는 FMS `cargo.json`이 소유한다.
-배송 단계: 픽업스테이션 이동 → 최종 묶음(2개) → 물품별 PICK → 세대별 물품별 DROP → 픽업 node 복귀·트레이 반납.
+배송 단계: 픽업 지점 이동 → 최종 묶음(2개) → 물품별 PICK → 세대별 물품별 DROP → 반납 지점 이동·칸별 트레이 반납 → 충전 스테이션 도킹.
+
+- 도킹 대상은 설정 `charger_target`: `auto`(기본, 반납 지점과 같은 층에서 가장 가까운 빈 충전소) · `off` · 충전소 목적지 이름.
+  후보는 `type=charger` 목적지 중 맵 `chargers.json`의 물리 충전기와 맞고, 진입 지점(FORWARD면 충전기 뒤 0.6 m, BACKWARD면 앞 0.6 m)이
+  주행 가능한 셀인 것이다. 다른 작업·배송이 향하거나 다른 로봇이 서 있는 충전소는 건너뛴다.
+- DOCK 액션은 `min_charge = charge_min`(기본 30 %)으로 보낸다. 도킹한 로봇은 충전량이 이 값 이상이면 다음 배송을 받고, 출발할 때 자동으로 빠져나온다.
+- 보관소에는 트레이 반납 시점에 결과와 `JOB_DONE`을 보낸다. 로봇 예약은 도킹이 끝날 때까지 유지한다(그동안 다음 배송은 배정 대기).
+- 도킹하지 못하면(빈 충전소 없음·진입 지점 막힘·도킹 실패) 물품 결과는 이미 확정이므로 배송을 끝내고 예약을 푼다. 사유는 진행 단계 '충전 스테이션 도킹'에 표시된다.
+  도킹 실패(`DOCK_FAILED`·`COLLISION` 등)로 로봇이 ERROR면 로봇 화면에서 오류를 해제한다.
+- 충전기 자세는 로봇이 닿는 면 기준이다. 벽을 등지고 복도를 보는 충전기는 `BACKWARD` 진입이어야 하고, 충전기 위치는 벽에서 로봇 길이의 절반 + 여유만큼 떨어져야 한다
+  (예: 길이 0.7 m 로봇이면 벽면에서 0.4 m 이상).
+이전 설정(`pickup_target` 일반 목적지)은 같은 목적지에서 반납한다.
 
 FMS 데이터 루트의 `locker_config.json`에 연결 설정, `locker_deliveries.json`에 배송·예약·좌표 스냅샷, `cargo.json`에 물품·묶음·트레이를 저장한다.
 보관소는 별도 `lastgate/server/data/locker.db`에 계정·물품·작업·발행 대기열을 저장한다.

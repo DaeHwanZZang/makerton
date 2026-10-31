@@ -70,6 +70,14 @@ FMS는 루트 common을 직접 사용한다. 뷰어의 common은 사본이며, C
   - **배터리 임계값** (`--battery-low` 20, `--battery-critical` 5, `check_battery()` 가 tick 마다): low 아래 WARNING `LOW_BATTERY`(+2% 히스테리시스로 해제). critical 아래로 **내려가며 통과하는 순간** FATAL `BATTERY_CRITICAL` (오더 버림, RESET_ERROR 뒤 재발생 없음). critical 아래에서는 `accept_order` 가 DOCK 노드가 있는 오더만 받는다. 0% 면 FATAL `BATTERY_EMPTY` + `motion_inhibited` (충전 중 제외, RESET_ERROR 해도 다시 걸린다 — 제어판 배터리 버튼으로만 살린다).
   - 마커 보정은 일부러 넣지 않았다 (사용자 결정). v1.4 에는 도착 오차도 없었지만 물리 도입 뒤에는 물리가 만든다 (보통 수 mm, 물리 설명).
 - **경로계획**: `planner.cpp` A* (로봇 크기 반영, 동적 장애물 사각형 입력). 장애물은 센서 범위(`--sensor-range`) 안에서만 인식한다. [알려진 문제](known-issues.md) 참고.
+- **복도 중앙 주행** (`CenterlineParams`, 기본 켜짐, `--no-center-path`로 끔):
+  - A* 칸 비용에 벽 근접 페널티 `weight·(1 − min(d, reach)/reach)²`를 곱해 더한다. d는 `ClearanceField`(비-FREE 셀까지 거리)다.
+    복도에서는 가운데가 가장 싸고, 벽에서 `reach`(기본 1.5 m, `--center-reach`) 밖은 페널티가 없어 넓은 홀에서는 직선으로 간다.
+    `weight` 기본 6 (`--center-weight`). 비용 배수 ≥ 1이라 유클리드 휴리스틱은 그대로 허용적이다.
+  - 단순화는 시야(LOS)에 더해 사이의 A* 점이 선분에서 `tolerance`(0.10 m) 안일 때만 건너뛴다. LOS만 보면 팽창 경계를 스치는 지름길이 되어 다시 벽에 붙는다.
+  - 1층 실측(로봇 폭 0.5 m): 벽까지 최소 거리 0.25 → 0.84 m, 평균 1.0~1.2 → 1.7~2.0 m. 길이 +4~9%, 경유점 4~6 → 9개, 계획 시간 27~71 → 53~102 ms.
+  - 동적 장애물 회피 재계획에도 적용한다. 장애물은 grid에서 막히고 거리 장은 정적 맵 기준 선호만 준다.
+    거리 장은 executor가 lazy 생성하고 `set_map()`에서 버린다 (PSO 다듬기와 공유).
 - **PSO 경로 다듬기** (`path_refine.cpp`, `--path-refine`, 기본 꺼짐):
   - 위치: `plan_segment_path()` 에서 구간별 A* 결과의 중간 경유점을 PSO 로 미세 조정한다.
   - 경유점 **개수와 목표점은 바꾸지 않는다** (`segment_wp_bounds_` 진행도 추적 때문).
@@ -141,6 +149,16 @@ FMS는 루트 common을 직접 사용한다. 뷰어의 common은 사본이며, C
 - `robot-details.js`는 DOM을 유지하며 팝업 데이터를 갱신한다. `elevator-status.js`는 운행 상태 표만 갱신해 연결 편집 폼을 보존한다. 서버 미연결, 상태 미수신, 오래된 마지막 수신값을 구분한다.
 - 뷰어의 따라가기 모드는 `map_follow.py`가 로봇 보고 UID/버전에 맞는 맵을 찾고 `MapCanvas.set_map()`으로 교체한다. GUI 조작은 Qt 메인 스레드에서 수행한다.
 
+## 교통 제어
+
+교통 제어는 `fms_server/traffic.py`가 맵별 이동 허가·대기 node·존을 관리하고 `JobCoordinator.lock`을 공유한다.
+예약은 MQTT 발행 전에 `traffic.json`에 저장하며 TTL로 해제하지 않는다. 해제에는 새 State의 노드 통과·차체 이탈·정지 증거가 필요하다.
+`Job.traffic.sources`로 삽입 노드를 원래 명령 진행률에서 제외한다. C++ MapModel은 `annotations.json`의 occupancy 경계를 읽고
+planner는 노드별 `allowed_zone_ids` 이외의 존을 차체 외접원+0.1 m로 막는다. 점유 존 맵에서는 PSO를 끈다.
+사각형 회전은 실제 `polygon`에 저장한다. Python/C++은 같은 중심·직교축·반너비·반높이로 점유 경계를 검사하며,
+예전 예약 파일의 축 평행 경계 4개 값도 복원한다. `zone-geometry.js`는 회전 핸들·로컬 축 크기 조절·범위 검사를 맡는다.
+`traffic.js`는 편집 입력을 보존하면서 정원·예약·존 상태를 표시한다. 운영·제약은 [교통 제어](traffic.md)를 따른다.
+
 ## 세부 계약 변경 시
 
 1. Python 원본 common을 바꾸면 뷰어에 대응 사본이 있는 파일도 동기화한다.
@@ -164,4 +182,10 @@ FMS는 루트 common을 직접 사용한다. 뷰어의 common은 사본이며, C
   실제 인도 목록과 잔여 적재물을 대조한 뒤 복귀시킨다. `docs/pickup-station.md`는 픽업스테이션·트레이 설계안이며 구현 단계를 표시한다.
 - FMS 물품 장부 `cargo.py`(`cargo.json`)가 물품 ID·묶음·트레이·상태를 소유한다. `locker.py`가 최종 묶음을 장부에 저장한 뒤
   물품별 PICK/DROP 하위 작업을 만들고, tick마다 로봇 action_states를 관측해 RUNNING/FINISHED를 반영한다.
-  하위 작업이 FINISHED 없이 끝나면 시작이 관측된 물품만 unknown이 된다. 복귀 후 `TRAY_RETURN:{bundle_id}` DROP 완료로 묶음을 닫는다.
+  하위 작업이 FINISHED 없이 끝나면 시작이 관측된 물품만 unknown이 된다. 트레이는 탈착식이며 장부가 칸 상태(`trays`)를 물품 상태와 따로 둔다.
+  반납 지점에서 칸별 `TRAY_RETURN:{bundle_id}:{tray}` DROP 완료로 칸을 비우고, 두 칸이 비면 묶음을 닫는다.
+- 트레이 반납 뒤 `docking` 단계에서 충전소 DOCK 하위 작업을 만든다(`locker.py` `_dock`). 보관소 `JOB_DONE`은 `docking` 진입 때 보내고,
+  로봇 예약은 도킹이 끝날 때 푼다. 도킹 실패는 배송을 차단하지 않고 `dock_note`로 남긴다.
+- 배송 진행 표시는 `delivery_progress.py`가 배송 레코드·하위 작업 stage·장부로 계산한다(상태 저장 없음). `locker.py`는
+  `_save`에서 단계 전환 시각(`timeline`)만 남긴다. 화면(로봇 팝업·진행 상세 창·작업 게시판·보관소 화면)은 `GET /sites/{site}/cargo`의
+  `deliveries`와 `GET /locker`의 같은 값을 쓴다.

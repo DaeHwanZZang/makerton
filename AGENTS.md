@@ -13,6 +13,7 @@
 | [로봇 안내](docs/robot-client.md) | 로컬라이징·액션·물리·기록·맵 수신 |
 | [맵 도구](docs/map-tools.md) | 좌표계·생성·편집·런처 |
 | [승강기 안내](docs/elevators.md) | 다층 이동·MQTT·시뮬레이터·운행 표시 |
+| [교통 제어](docs/traffic.md) | 맵별 이동 정원·점유 존·대기/출구 node·예약 복원 |
 | [개발 구조](docs/architecture.md) | 모듈 책임과 세부 구현 불변조건 |
 | [알려진 문제](docs/known-issues.md) | 현재 한계와 해결 기록 |
 | `viewer/README.md`, `broker/README.md` | 구성 요소별 실행·조작 |
@@ -76,6 +77,7 @@ make
 ## FMS 변경 시 불변조건
 
 - 단일 프로세스 운영이다. 파일 저장과 프로세스 내부 락을 다중 worker에 확장한 것으로 설명하지 않는다.
+- 교통 제어는 배정과 같은 코디네이터 락을 쓴다. 이동·대기 node·존 예약은 발행 전에 저장하고 취소·TTL·맵 변경만으로 해제하지 않는다. 새 State의 차체 이탈·정지 증거를 확인한다. 삽입 node는 원래 작업 진행률에 포함하지 않는다. 점유 존 맵의 C++ 재탐색도 노드별 미허가 존을 차단하며 PSO를 적용하지 않는다.
 - 프리셋 게시 시 명령·목적지 좌표·맵을 작업에 복사한다. 프리셋/목적지 수정이 생성된 작업을 바꾸지 않아야 한다.
 - 자동 배정은 auto_assign=true인 pending만 대상이다. FIFO와 로봇 ID 순서로 검사하고 수동/자동 배정은 같은 코디네이터 락을 사용한다.
 - assigned/working/canceling의 로봇 예약을 유지한다. 수신 불명확 작업을 자동 재게시하거나 다른 로봇에 넘기지 않는다. 액션 FINISHED 전에는 해당 단계를 완료로 세지 않는다.
@@ -84,7 +86,7 @@ make
 - 층 전환은 하차 후 맵 전환→시뮬 teleport→위치 확인 순서다. 방향·임대·실패 제약은 승강기 안내를 따른다.
 - 데이터 미수신과 실제 0 값을 구분한다. 운행 표시용 snapshot의 stale 값 보존과 제어용 stale 차단을 혼동하지 않는다.
 - LastGate 물품·계정 장부는 `lastgate/server/`의 SQLite, 배송 운행은 `fms_server/locker.py`가 소유한다. 단계 사이와 오류 차단 중에도 배송 로봇 예약을 유지하고 수동·자동 배정은 같은 코디네이터 락에서 검사한다.
-- 배송 묶음은 물품 2개·트레이 2개(TRAY_A/B, 트레이당 1개)다. FMS 물품 장부(`cargo.py`)에 ID·트레이를 저장한 뒤 PICK을 발행하고, 상태는 PICK/DROP·트레이 반납 FINISHED로만 확정한다. 증거 없으면 unknown, 자동 재실행·자동 해제 금지.
+- 배송 묶음은 물품 2개·트레이 2개(TRAY_A/B, 트레이당 1개)다. FMS 물품 장부(`cargo.py`)에 ID·트레이를 저장한 뒤 PICK을 발행하고, 상태는 PICK/DROP·칸별 트레이 반납 FINISHED로만 확정한다. 트레이는 탈착식이며 칸 상태가 모두 none이어야 새 묶음을 받는다. 증거 없으면 unknown, 자동 재실행·자동 해제 금지.
 - 배송은 보관소 도착 후 최종 묶음만 실행한다. PICK/DROP FINISHED를 확인하고, 실패 물품 재입고·JOB_DONE은 보관소 복귀 뒤 보고한다. 불확실 인도는 운영자가 적재물을 대조한다. 실행·설정은 `lastgate/README.md`를 따른다.
 
 ## 맵과 편집
@@ -93,8 +95,9 @@ make
 - FREE만 주행 가능하며 UNKNOWN/맵 밖은 막힌 것으로 취급한다. planner 팽창을 바꾸면 tools/clean_map.py의 inflate_free와 생성 검사도 맞춘다.
 - grid_cfg.grid가 있으면 벤더 좌표계를 우선한다. 없으면 fms_map.json과 참조 PNG를 사용한다. location/zone 메타는 선택이다.
 - 원본 edited_navi_gridmap.png는 source에 보존한다. 로봇용 이미지는 navi_gridmap.baked.png이며 구역 편집은 원본에서 새 버전으로 다시 굽는다.
+- 사각형 zone 회전은 중심 기준이며 실제 polygon으로 저장한다. Python/C++의 점유 판정·경로 마스크·승강기 기하는 회전 경계를 사용한다. 연결된 픽업·반납·대기·출구 node는 함께 돌리지 않는다.
 - chargers.json은 선택 번들 파일이고 버전 해시에 포함한다. 웹 도킹 등록은 목적지 저장 성공 후 준비한 새 맵을 활성화한다.
-- 픽업스테이션은 pickup zone(맵 버전)과 `type=pickup` location(`zone_id`)의 1:1 쌍이다. 생성·삭제·위치 변경은 픽업스테이션 API로만 하고 일반 zone/location API 우회를 막는다. pickup zone을 굽거나 미지 type으로 떨어뜨리지 않도록 common·viewer 사본을 함께 바꾼다.
+- 픽업스테이션은 pickup zone(맵 버전)과 `type=pickup`·`type=tray_return` location(`zone_id`)의 1:1:1 묶음이다. 반납 지점이 없으면 broken이다. 생성·삭제·위치 변경은 픽업스테이션 API로만 하고 일반 zone/location API 우회를 막는다. pickup zone을 굽거나 미지 type으로 떨어뜨리지 않도록 common·viewer 사본을 함께 바꾼다.
 - 일반 목적지는 맵 버전을 바꾸지 않는다. 이름 변경 시 프리셋/스냅샷 없는 pending 참조를 갱신하고 기존 작업 스냅샷과 물리 충전기 ID는 보존한다.
 - LocationStore의 공유 락과 파일 교체, base_version 충돌 검사를 유지한다. 편집 초안을 주기 갱신으로 덮어쓰지 않는다.
 - `maps/gui_map`의 수동 원점·edits는 재생성하지 않는다. 생성 맵의 (0,0)은 UNKNOWN 여백일 수 있다.

@@ -11,8 +11,9 @@
     {data_root}/sites/{site_id}/locations.json
       { "locations": { "<name>": {map_id, x, y, theta, type, zone_id?, created_at, updated_at} } }
 
-픽업스테이션 node 는 `type: pickup` 과 `zone_id`(같은 맵 pickup zone 의 ID)를 가진다.
-zone 과 1:1 이며 생성·자세 변경·삭제는 픽업스테이션 API(`fms_server/pickup_stations.py`)만 한다.
+픽업스테이션 node 는 `type: pickup`(트레이 적재) 또는 `type: tray_return`(빈 트레이 반납)과
+`zone_id`(같은 맵 pickup zone 의 ID)를 가진다. zone 하나에 종류별 node 하나이며
+생성·자세 변경·삭제는 픽업스테이션 API(`fms_server/pickup_stations.py`)만 한다.
 
 벤더 맵의 `annotations.json` location 과는 별개다. 그쪽은 버전별 콘텐츠 해시라
 불변 — 여기는 관리자가 자유롭게 추가/수정하는 mutable 파일.
@@ -35,6 +36,8 @@ from fms_server.mapkit.store import MapStore, MapStoreError
 log = logging.getLogger("fms.locations")
 
 LOCATIONS_FILE = "locations.json"
+# 픽업스테이션에 딸린 node 종류. zone_id 가 있어야 하고 일반 location API 로 만들 수 없다.
+STATION_NODE_TYPES = (LocationType.PICKUP.value, LocationType.TRAY_RETURN.value)
 _LOCATIONS_LOCK = threading.RLock()
 
 
@@ -67,7 +70,7 @@ class NamedLocation:
     type: str = LocationType.WAYPOINT.value
     created_at: str = ""
     updated_at: str = ""
-    zone_id: Optional[str] = None  # type == pickup 일 때만. 연결된 pickup zone (불변 스테이션 ID)
+    zone_id: Optional[str] = None  # type == pickup/tray_return 일 때만. 연결된 pickup zone (불변 스테이션 ID)
 
     @property
     def pose(self) -> Pose:
@@ -184,7 +187,7 @@ class LocationStore:
         return loc
 
     def by_zone(self, zone_id: str) -> list[NamedLocation]:
-        """pickup zone 에 연결된 node 목록. 정상이면 1개다 (복구 전 이상 상태 확인용으로 목록 반환)."""
+        """pickup zone 에 연결된 node 목록. 정상이면 픽업·반납 각 1개다 (이상 상태 확인용으로 목록 반환)."""
         with self._lock:
             return [loc for loc in self._load().values() if loc.zone_id == zone_id]
 
@@ -209,14 +212,15 @@ class LocationStore:
         _check_name(name)
         theta = normalize_theta(theta)
         loc_type = self._coerce_type(type)
-        if (loc_type == LocationType.PICKUP.value) != (zone_id is not None):
-            raise LocationError("픽업 지점은 픽업스테이션으로만 등록할 수 있다 (zone 과 함께)")
+        if (loc_type in STATION_NODE_TYPES) != (zone_id is not None):
+            raise LocationError("픽업·반납 지점은 픽업스테이션으로만 등록할 수 있다 (zone 과 함께)")
         with self._lock:
             locs = self._load()
             if name in locs:
                 raise LocationError(f"location {name!r} 가 이미 있다")
-            if zone_id is not None and any(loc.zone_id == zone_id for loc in locs.values()):
-                raise LocationError("이 픽업 구역에는 이미 픽업 지점이 연결되어 있다")
+            if zone_id is not None and any(loc.zone_id == zone_id and loc.type == loc_type
+                                           for loc in locs.values()):
+                raise LocationError("이 픽업 구역에는 같은 종류의 지점이 이미 연결되어 있다")
             self._require_map(map_id)
             pose = Pose(x=x, y=y, theta=theta)  # theta 범위 검증
             now = _now_iso()
@@ -254,8 +258,8 @@ class LocationStore:
             new_y = y if y is not None else loc.y
             new_theta = normalize_theta(theta) if theta is not None else loc.theta
             new_type = self._coerce_type(type) if type is not None else loc.type
-            if (new_type == LocationType.PICKUP.value) != (loc.type == LocationType.PICKUP.value):
-                raise LocationError("픽업 지점 종류는 바꿀 수 없다. 픽업스테이션을 추가·삭제하세요.")
+            if new_type != loc.type and (new_type in STATION_NODE_TYPES or loc.type in STATION_NODE_TYPES):
+                raise LocationError("픽업·반납 지점 종류는 바꿀 수 없다. 픽업스테이션을 추가·삭제하세요.")
             if map_id is not None:
                 self._require_map(new_map)
             pose = Pose(x=new_x, y=new_y, theta=new_theta)
@@ -275,8 +279,8 @@ class LocationStore:
             locs = self._load()
             if name not in locs:
                 raise LocationNotFound(f"location {name!r} 없음")
-            if locs[name].type == LocationType.PICKUP.value and not allow_pickup:
-                raise LocationError("픽업 지점은 픽업스테이션 삭제로만 지울 수 있다")
+            if locs[name].type in STATION_NODE_TYPES and not allow_pickup:
+                raise LocationError("픽업·반납 지점은 픽업스테이션 삭제로만 지울 수 있다")
             del locs[name]
             self._save(locs)
         log.info("location 삭제: %s", name)

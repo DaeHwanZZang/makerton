@@ -286,31 +286,36 @@ class StopGeometry:
 
 
 def stop_geometry(zone, model, entry_theta: Optional[float] = None, *, margin: float = 0.5) -> StopGeometry:
-    xs = [p.x for p in zone.polygon]
-    ys = [p.y for p in zone.polygon]
-    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    from common.map_annotations import rectangle_frame
+    try:
+        cx,cy,ux,uy,hw,hh = rectangle_frame(zone.polygon)
+    except ValueError:
+        # 기존 벤더의 임의 다각형은 이전의 외접 사각형 계산을 유지한다.
+        xs,ys = [p.x for p in zone.polygon],[p.y for p in zone.polygon]
+        cx,cy = (min(xs)+max(xs))/2,(min(ys)+max(ys))/2
+        ux,uy,hw,hh = 1,0,(max(xs)-min(xs))/2,(max(ys)-min(ys))/2
     # 변마다 (바깥 방향, 중심에서 변까지 반길이, 변 위 샘플 점들)
     sides = {
-        "E": ((1, 0), (x1 - x0) / 2), "W": ((-1, 0), (x1 - x0) / 2),
-        "S": ((0, 1), (y1 - y0) / 2), "N": ((0, -1), (y1 - y0) / 2),
+        "E": ((ux, uy), hw, 2*hh), "W": ((-ux, -uy), hw, 2*hh),
+        "S": ((-uy, ux), hh, 2*hw), "N": ((uy, -ux), hh, 2*hw),
     }
     if entry_theta is not None:
         dx, dy = -math.cos(entry_theta), -math.sin(entry_theta)  # 문 쪽 = 진입 방향의 반대
-        half = abs(dx) * (x1 - x0) / 2 + abs(dy) * (y1 - y0) / 2
+        local_x,local_y = abs(dx*ux+dy*uy),abs(-dx*uy+dy*ux)
+        half = min(hw/local_x if local_x > 1e-12 else math.inf,
+                   hh/local_y if local_y > 1e-12 else math.inf)
         theta = entry_theta
     else:
         best, best_frac = None, 0.0
-        for name, ((dx, dy), half) in sides.items():
+        for name, ((dx, dy), half, span) in sides.items():
             # 변 바로 바깥 0.3/0.6 m 의 선을 따라 FREE 비율을 센다 (닫힌 벽 쪽은 0)
-            span = (y1 - y0) if dx else (x1 - x0)
             n = max(3, int(span / 0.2))
             free = tot = 0
             for d in (0.3, 0.6):
                 for i in range(n):
                     t = -span / 2 + span * (i + 0.5) / n
-                    px = cx + dx * (half + d) + (0 if dx else t)
-                    py = cy + dy * (half + d) + (t if dx else 0)
+                    px = cx + dx * (half + d) - dy*t
+                    py = cy + dy * (half + d) + dx*t
                     tot += 1
                     free += model.is_free(px, py)
             frac = free / tot

@@ -4,7 +4,7 @@
     GET  /api/v1/sites/{site_id}/parcels/{parcel_id}
     POST /api/v1/sites/{site_id}/parcels/{parcel_id}/resolve   {result, reason}
     GET  /api/v1/sites/{site_id}/delivery-bundles
-    GET  /api/v1/sites/{site_id}/cargo                          화면용: 물품·묶음·로봇 트레이 한 번에
+    GET  /api/v1/sites/{site_id}/cargo                          화면용: 물품·묶음·로봇 트레이·배송 진행 한 번에
     GET  /api/v1/robots/{robot_id}/cargo                        로봇 두 트레이의 현재 물품
 """
 from __future__ import annotations
@@ -63,6 +63,20 @@ def list_bundles(site_id: str, request: Request):
     return request.app.state.cargo.bundles(site_id)
 
 
+_DELIVERY_KEYS = ('job_id', 'phase', 'robot_id', 'child_id', 'error', 'bundle_id', 'pickup_name',
+                  'return_name', 'return_trays', 'results', 'index', 'timeline', 'progress', 'bundle',
+                  'charger', 'dock_note')
+
+
+def _delivery_view(d):
+    """화면 폴링용으로 좌표 스냅샷·설정은 뺀다."""
+    view = {k: d.get(k) for k in _DELIVERY_KEYS}
+    view['stops'] = [{'household': s['household'], 'target': s['target'], 'parcels': s.get('parcels', [])}
+                     for s in d.get('stops') or []]
+    view['items'] = d.get('items') or d.get('proposed_items') or []
+    return view
+
+
 @router.get('/api/v1/sites/{site_id}/cargo')
 def site_cargo(site_id: str, request: Request):
     cargo = request.app.state.cargo
@@ -73,7 +87,14 @@ def site_cargo(site_id: str, request: Request):
         robot_ids = []
     for robot_id in robot_ids:
         robots[robot_id] = cargo.robot_cargo(robot_id)
-    return {'parcels': cargo.parcels(site_id), 'bundles': cargo.bundles(site_id), 'robots': robots}
+    deliveries = []
+    locker = getattr(request.app.state, 'locker', None)
+    if locker is not None:
+        # 보관소 배송 1건 = 화면의 배송 작업 1개. 진행 단계·타임라인을 함께 준다.
+        deliveries = [_delivery_view(d) for d in locker.snapshot()['deliveries']
+                      if d['config'].get('site_id') == site_id]
+    return {'parcels': cargo.parcels(site_id), 'bundles': cargo.bundles(site_id), 'robots': robots,
+            'deliveries': deliveries}
 
 
 @router.get('/api/v1/robots/{robot_id}/cargo')

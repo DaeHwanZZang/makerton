@@ -210,7 +210,11 @@ def get_site(site_id: str, request: Request) -> SiteOut:
 @router.delete("/{site_id}")
 def delete_site(site_id: str, request: Request, force: bool = False):
     try:
-        _registry(request).delete_site(site_id, force=force)
+        with request.app.state.job_coordinator.lock:
+            from fms_server.api.traffic import ensure_editable
+            for m in _registry(request).map_store(site_id).list_maps():
+                ensure_editable(request, site_id, m.map_id)
+            _registry(request).delete_site(site_id, force=force)
     except SiteNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     except SiteError as exc:
@@ -245,10 +249,14 @@ async def upload_map(
             payload[f.filename] = await f.read()
 
     try:
-        result = store.ingest_upload(
-            map_id, payload,
-            despeckle_iterations=despeckle_iterations, activate=activate,
-        )
+        with request.app.state.job_coordinator.lock:
+            if activate:
+                from fms_server.api.traffic import ensure_editable
+                ensure_editable(request, site_id, map_id)
+            result = store.ingest_upload(
+                map_id, payload,
+                despeckle_iterations=despeckle_iterations, activate=activate,
+            )
     except MapStoreError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
@@ -322,7 +330,10 @@ def get_file(site_id: str, map_id: str, filename: str, request: Request, version
 def activate_map(site_id: str, map_id: str, body: ActivateRequest, request: Request) -> ActivateResultOut:
     try:
         store = _registry(request).map_store(site_id)
-        store.activate(map_id, body.version)
+        with request.app.state.job_coordinator.lock:
+            from fms_server.api.traffic import ensure_editable
+            ensure_editable(request, site_id, map_id)
+            store.activate(map_id, body.version)
     except (SiteError, MapStoreError) as exc:
         raise _404(str(exc)) from None
 
@@ -341,7 +352,10 @@ def activate_map(site_id: str, map_id: str, body: ActivateRequest, request: Requ
 @router.post("/{site_id}/robots", response_model=RegisterRobotResultOut)
 def register_robot(site_id: str, body: RegisterRobotRequest, request: Request) -> RegisterRobotResultOut:
     try:
-        assignment = _registry(request).register_robot(site_id, body.robot_id, body.map_id)
+        with request.app.state.job_coordinator.lock:
+            from fms_server.api.traffic import ensure_robot_editable
+            ensure_robot_editable(request, body.robot_id, site_id, body.map_id)
+            assignment = _registry(request).register_robot(site_id, body.robot_id, body.map_id)
     except SiteNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     except SiteError as exc:
@@ -364,7 +378,10 @@ def reassign_robot(
     site_id: str, robot_id: str, body: ReassignRobotRequest, request: Request
 ) -> RegisterRobotResultOut:
     try:
-        assignment = _registry(request).register_robot(site_id, robot_id, body.map_id)
+        with request.app.state.job_coordinator.lock:
+            from fms_server.api.traffic import ensure_robot_editable
+            ensure_robot_editable(request, robot_id, site_id, body.map_id)
+            assignment = _registry(request).register_robot(site_id, robot_id, body.map_id)
     except SiteNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     except SiteError as exc:
@@ -376,7 +393,10 @@ def reassign_robot(
 @router.delete("/{site_id}/robots/{robot_id}")
 def unregister_robot(site_id: str, robot_id: str, request: Request):
     try:
-        _registry(request).unregister_robot(site_id, robot_id)
+        with request.app.state.job_coordinator.lock:
+            from fms_server.api.traffic import ensure_robot_editable
+            ensure_robot_editable(request, robot_id)
+            _registry(request).unregister_robot(site_id, robot_id)
     except SiteError as exc:
         raise _404(str(exc)) from None
     return {"unregistered": robot_id, "site_id": site_id}

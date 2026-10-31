@@ -1,7 +1,7 @@
 """물리(MuJoCo) 통합 테스트. empty_hall1 에서 robot_client 를 실제로 띄워 MQTT 로 시험한다.
 
 리포 루트에서: .venv/bin/python tools/physics_test.py [시나리오 이름...]
-시나리오: move straight dock collision pause ghost lowfric slip loop longrun obstacle dockint gui topic estimate localization unlocalized charger battery (생략하면 전부, 약 11분)
+시나리오: move straight dock collision pause ghost lowfric slip loop longrun obstacle dockint gui topic estimate localization unlocalized charger battery traffic traffic-rotated (생략하면 전부)
 mosquitto 를 자체 포트(18851)로 띄우므로 이미 떠 있는 브로커와 부딪히지 않는다. 로봇 로그와 기록 CSV 는 임시 폴더에 남는다.
 """
 import csv, glob, json, math, os, shutil, signal, subprocess, sys, tempfile, threading, time
@@ -560,8 +560,123 @@ def test_gui_offscreen():
     check("gui(offscreen): snapshot saved (physics panel renders)", os.path.exists(f"{SCR}/gui_U1.png"))
 
 
+def test_traffic(rotation=0):
+    """실제 두 C++ 프로세스 + FMS + MQTT + 맵 번들로 점유 존을 검증한다."""
+    import functools
+    import http.server
+    import io
+    from pathlib import Path
+    from PIL import Image
+    sys.path.insert(0, REPO)
+    from common.schemas import InstantAction, InstantActionType
+    from common.map_annotations import rectangle_polygon
+    from fms_server.config import Settings
+    from fms_server.fleet import Fleet
+    from fms_server.mqtt_client import FmsMqttClient
+    from fms_server.sites import SiteRegistry
+    from fms_server.task import JobCoordinator, JobStore
+
+    root = Path(SCR)/f'traffic-{rotation}'
+    registry = SiteRegistry(root)
+    registry.create_site('hq','교통 시험')
+    angle = math.radians(rotation)
+    co,si = math.cos(angle),math.sin(angle)
+    target_cx,target_cy = (10,10) if rotation else (8,5)
+    def transform(x,y,theta=0):
+        dx,dy = x-8,y-5
+        return dict(x=target_cx+co*dx-si*dy,y=target_cy+si*dx+co*dy,theta=theta+angle)
+    def original_x(p):
+        return 8+co*(p['x']-target_cx)+si*(p['y']-target_cy)
+    shape = (200,200) if rotation else (160,100)
+    image = Image.new('L',shape,255)
+    from PIL import ImageDraw
+    ImageDraw.Draw(image).rectangle((0,0,shape[0]-1,shape[1]-1),outline=0,width=2)
+    buf = io.BytesIO(); image.save(buf,format='PNG')
+    p = transform
+    # 45도 존도 맵 양 끝에 닿게 해 미허가 우회 경로가 없는 장면을 만든다.
+    polygon = (rectangle_polygon(9,10-(20*math.sqrt(2)-2)/2,2,20*math.sqrt(2)-2,rotation)
+               if rotation else rectangle_polygon(7,0,2,10))
+    files = {'fms_map.json':json.dumps(dict(name='hall',image='grid.png',resolution=.1,
+              origin_x=0,origin_y=0,width_px=shape[0],height_px=shape[1])).encode(), 'grid.png':buf.getvalue(),
+             'zone_meta.json':json.dumps({'zones':[dict(id='crossing',name='교차로',type='occupancy',
+                 polygon=[[v.x,v.y] for v in polygon],gates=[
+                     dict(gate_id='west',wait=p(5,3),exit=p(11,3)),
+                     dict(gate_id='east',wait=p(11,7),exit=p(5,7))])]}).encode()}
+    maps = registry.map_store('hq')
+    result = maps.ingest_upload('f1',files,activate=True)
+    root.mkdir(parents=True,exist_ok=True)
+    (root/'bundle.zip').write_bytes(maps.bundle_zip('f1'))
+    class QuietHandler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self,*args): pass
+    server = http.server.ThreadingHTTPServer(('127.0.0.1',0),functools.partial(QuietHandler,directory=str(root)))
+    thread = threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    fleet, jobs = Fleet(), JobStore(root)
+    transport = FmsMqttClient(fleet,Settings(mqtt_port=PORT,mqtt_client_id='traffic-test'))
+    coord = JobCoordinator(fleet,registry,jobs,transport)
+    coord.start();transport.start()
+    robots = []
+    try:
+        for rid,x,y,th in [('T1',3,3,0),('T2',13,7,math.pi)]:
+            start = transform(x,y,th)
+            x,y,th = start['x'],start['y'],start['theta']
+            registry.register_robot('hq',rid,'f1')
+            robot = Robot(rid,x,y,th,mapfile=str(maps.file_path('f1','fms_map.json')),
+                          extra=('--map-cache',str(root/rid)),record=False,localize=False)
+            robots.append(robot)
+            transport.publish_instant(InstantAction(header_id=0,timestamp=time.time(),robot_id=rid,
+                action_id='set-'+rid,action_type=InstantActionType.SET_MAP,
+                params=dict(map_id=maps.map_uid('f1'),map_version=result.version,
+                            url=f'http://127.0.0.1:{server.server_port}/bundle.zip')))
+            synced = robot.wait(lambda s:s.get('map_version')==result.version,15)
+            check(f'traffic: {rid} downloads occupancy bundle',synced is not None)
+            robot.hint(x,y,th)
+            check(f'traffic: {rid} localized',robot.wait(lambda s:s['localization']=='LOCALIZED',10) is not None)
+        for name,x,y,th in [('east',13,3,0),('west',3,7,math.pi)]:
+            goal = transform(x,y,th)
+            registry.location_store('hq').create(name,'f1',goal['x'],goal['y'],goal['theta'])
+        a = jobs.create('hq',[dict(type='move',target='east')],'T1')
+        b = jobs.create('hq',[dict(type='move',target='west')],'T2')
+        coord.dispatch(a.job_id);coord.dispatch(b.job_id)
+        max_inside, waited, violation = 0, False, False
+        t0 = time.time()
+        while time.time()-t0 < 65 and not (a.status.terminal and b.status.terminal):
+            coord.allocate_pending()
+            states = [r.state for r in robots]
+            inside = [s for s in states if s and 6.5 <= original_x(s['pose']) <= 9.5]
+            max_inside = max(max_inside,len(inside))
+            waited |= any(s and s['sub_state']=='WAITING' and 4.9 <= original_x(s['pose']) <= 11.1 for s in states)
+            for s in inside:
+                owner = coord.traffic.data['leases'].get('zone:hq/f1:crossing',{}).get('robot')
+                violation |= owner != s['robot_id']
+            time.sleep(.05)
+        check('traffic: both jobs finish',a.status.value=='success' and b.status.value=='success',f'{a.status.value}, {b.status.value}')
+        check('traffic: at most one chassis inside zone',max_inside==1 and not violation,f'max={max_inside} unauthorized={violation}')
+        check('traffic: waits at designated node',waited)
+        check('traffic: inserted nodes do not inflate progress',a.done_commands==1 and b.done_commands==1)
+        coord.tick_traffic()
+        check('traffic: reservations cleared',not coord.traffic.data['leases'])
+        # FMS를 거치지 않은 오더도 미허가 존을 가로지를 수 없다.
+        r = robots[0]
+        raw_goal = transform(3,3)
+        r.order('unauthorized',[f'{raw_goal["x"]},{raw_goal["y"]}'])
+        error = r.wait(lambda s:any(e['error_type']=='NO_PATH' for e in s['errors']),5)
+        check('traffic: raw unauthorized order is blocked',error is not None and original_x(r.pose())>9.5)
+        r.instant('RESET_ERROR')
+        r.wait(lambda s:s['state']=='IDLE',5)
+        raw_start = transform(14,3)
+        r.order('unauthorized-straight',[f'{raw_start["x"]},{raw_start["y"]},{raw_start["theta"]}'],action='STRAIGHT',params=['distance=-10'])
+        error = r.wait(lambda s:any(e['error_type']=='TRAFFIC_BLOCKED' for e in s['errors']),15)
+        check('traffic: unauthorized straight motion is blocked',error is not None and original_x(r.pose())>9.5)
+    finally:
+        coord.stop();transport.stop()
+        for robot in robots: robot.stop()
+        server.shutdown();server.server_close();thread.join(2)
+
+
 ALL = {
     "move": test_move, "straight": test_straight, "dock": test_dock_park, "collision": test_collision,
+    "traffic": test_traffic,
+    "traffic-rotated": lambda: test_traffic(45),
     "pause": test_pause_cancel, "ghost": test_ghost_start, "lowfric": test_low_friction, "slip": test_normal_slip_small,
     "loop": test_loop_map, "longrun": test_longrun, "obstacle": test_obstacle, "dockint": test_dock_interrupt, "gui": test_gui_offscreen, "topic": test_physics_topic, "estimate": test_estimated_pose, "localization": test_localization, "unlocalized": test_unlocalized, "charger": test_charger, "battery": test_battery,
 }

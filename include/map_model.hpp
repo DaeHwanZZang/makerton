@@ -10,6 +10,11 @@
 
 namespace fms {
 
+struct OccupancyZone {
+    std::string id;
+    double cx, cy, ux, uy, half_width, half_height;
+};
+
 // 값 자체가 python classify_grid() 의 코드값과 같다: 0=OCCUPIED, 1=UNKNOWN, 2=FREE
 enum class CellType { OCCUPIED = 0, UNKNOWN = 1, FREE = 2 };
 inline bool drivable(CellType c) { return c == CellType::FREE; }
@@ -32,6 +37,9 @@ class MapModel {
 public:
     MapMetadata metadata;
     std::string base_dir;
+    std::vector<OccupancyZone> occupancy_zones;
+    bool traffic_blocked(double x, double y, double margin,
+                         const std::vector<std::string>& allowed = {}) const;
 
     static MapModel load(const std::string& metadata_path);
 

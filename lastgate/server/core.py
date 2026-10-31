@@ -385,6 +385,8 @@ class LockerCore:
             self._on_delivery_result(job, event)
         elif event["kind"] == "JOB_DONE":
             self._on_job_done(job)
+        elif event["kind"] == "JOB_REJECTED":
+            self._on_job_rejected(job, event)
 
     def _on_robot_arrived(self, job: dict, robot_id: str | None):
         job_id = job["job_id"]
@@ -446,6 +448,34 @@ class LockerCore:
         self.store.update_job(job["job_id"], status="DONE", done_at=self.now().isoformat())
         self._dirty = True
         log("Job", f"{job['job_id']} 완료")
+        self._issue_jobs()
+
+    def _on_job_rejected(self, job: dict, event: dict):
+        """FMS 가 로봇 배정 전에 배송을 취소했다 (예: 세대 목적지 연결 없음).
+
+        로봇에 싣기 전이므로 물품은 보관 셀에 그대로 있다. FMS 가 갈 수 없다고 한 세대의 물품은
+        직접 수령으로 바꿔 같은 묶음이 다시 발행되어 멈추는 것을 막고, 나머지는 다음 배송 후보로 돌린다.
+        """
+        if job["status"] != "PENDING":
+            if job["status"] == "CONFIRMED":
+                log("FMS", f"{job['job_id']} 취소 무시 — 이미 적재 확정됨")
+            return
+        unroutable = set(event["unroutable"])
+        direct = []
+        for item in self.store.items([Status.JOB_ASSIGNED], job_id=job["job_id"]):
+            item.status, item.job_id = Status.STORED, None
+            if item.receipt_no in unroutable and item.mode == Mode.ROBOT:
+                self._apply_mode(item, Mode.DIRECT)    # 수령 방식에 맞는 보관 구역으로 재배치 포함
+                direct.append(f"{item.receipt_no}({item.dong}-{item.ho})")
+            else:
+                self._save(item)
+        now = self.now()
+        self.store.update_job(job["job_id"], status="CANCELLED", done_at=now.isoformat())
+        self.store.log_event(now.isoformat(), "JOB_REJECTED",
+                             {"job_id": job["job_id"], "reason": event["reason"], "direct": direct})
+        self._dirty = True
+        log("Job", f"{job['job_id']} FMS 취소 — {event['reason'] or '사유 없음'}"
+                   + (f" · 직접 수령 전환 {', '.join(direct)}" if direct else ""))
         self._issue_jobs()
 
     def _return_failed(self, item: Item, reason: str):

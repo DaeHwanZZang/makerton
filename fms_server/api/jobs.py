@@ -62,6 +62,7 @@ class JobOut(BaseModel):
     order_update_id: int
     done_commands: int
     total_commands: int
+    traffic_waiting: str | None = None
     stage: int = 0              # 다층 job: 지금 단계 (0부터)
     total_stages: int = 0       # 0 이면 단일 Order job
     stage_label: str | None = None
@@ -84,6 +85,7 @@ class JobOut(BaseModel):
             order_update_id=job.order_update_id,
             done_commands=job.done_commands,
             total_commands=len(job.commands),
+            traffic_waiting=job.traffic.get('waiting'),
             stage=job.stage, total_stages=len(job.plan),
             stage_label=stage_label(job.plan[job.stage]) if job.plan and job.stage < len(job.plan) else None,
             error=job.error,

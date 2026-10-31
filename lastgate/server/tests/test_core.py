@@ -367,6 +367,25 @@ class CoreTests(unittest.TestCase):
         self.assertNotEqual(item.job_id, job_id)
         self.assertEqual(item.status, "JOB_ASSIGNED")  # 다음 배송으로 다시 발행한다
 
+    def test_fms_rejection_switches_unroutable_to_direct_and_reissues(self):
+        first, second, job_id = self.store_pair()
+        third = self.store_item(dong=101, ho=410)
+        self.fms(type="JOB_REJECTED", job_id=job_id, reason="세대 101-412 목적지 연결 없음", unroutable=[first])
+        self.assertEqual(self.store.get_job(job_id)["status"], "CANCELLED")
+        item = self.store.get_item(first)
+        self.assertEqual((item.status, item.mode, item.job_id), ("STORED", "DIRECT", None))
+        # 나머지는 다음 배송 후보. 갈 수 없는 물품 없이 새 Job 을 발행한다.
+        new_job = self.published(T.TOPIC_FMS_JOB, "DELIVERY_JOB")[-1]
+        self.assertNotEqual(new_job["job_id"], job_id)
+        self.assertEqual({i["receipt_no"] for i in new_job["items"]}, {second, third})
+        # 중복 취소·적재 확정 후 취소는 무시
+        self.fms(type="JOB_REJECTED", job_id=job_id, reason="중복", unroutable=[second])
+        self.assertEqual(self.store.get_item(second).mode, "ROBOT")
+        self.fms(type="ROBOT_ARRIVED", job_id=new_job["job_id"], robot_id="R1")
+        self.fms(type="JOB_REJECTED", job_id=new_job["job_id"], reason="늦음", unroutable=[second])
+        self.assertEqual(self.store.get_job(new_job["job_id"])["status"], "CONFIRMED")
+        self.assertEqual(self.status(second), "LOADED")
+
     def test_outbox_survives_restart_and_transaction_rollback(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "locker.db"

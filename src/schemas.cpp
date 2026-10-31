@@ -431,7 +431,7 @@ cJSON* BatteryInfo::to_json() const {
 
 OrderNode OrderNode::from_json(cJSON* obj) {
     static const std::unordered_set<std::string> known = {
-        "node_id", "sequence_id", "released", "position", "action", "reserved_window"};
+        "node_id", "sequence_id", "released", "position", "action", "reserved_window", "allowed_zone_ids"};
     require_no_extra_fields(obj, known, "OrderNode");
     OrderNode n;
     n.node_id = get_str(obj, "node_id", "OrderNode");
@@ -443,6 +443,15 @@ OrderNode OrderNode::from_json(cJSON* obj) {
     if (act && !cJSON_IsNull(act)) n.action = Action::from_json(act);
     cJSON* win = cJSON_GetObjectItemCaseSensitive(obj, "reserved_window");
     if (win && !cJSON_IsNull(win)) n.reserved_window = TimeWindow::from_json(win);
+    cJSON* zones = cJSON_GetObjectItemCaseSensitive(obj, "allowed_zone_ids");
+    if (zones) {
+        if (!cJSON_IsArray(zones)) throw ValidationError("allowed_zone_ids must be an array");
+        cJSON* z;
+        cJSON_ArrayForEach(z, zones) {
+            if (!cJSON_IsString(z)) throw ValidationError("allowed_zone_ids entries must be strings");
+            n.allowed_zone_ids.emplace_back(z->valuestring);
+        }
+    }
     return n;
 }
 
@@ -572,6 +581,7 @@ std::string State::to_json_string() const {
     cJSON_AddNumberToObject(root, "header_id", (double)header_id);
     cJSON_AddNumberToObject(root, "timestamp", timestamp);
     cJSON_AddStringToObject(root, "robot_id", robot_id.c_str());
+    cJSON_AddBoolToObject(root, "traffic_control", traffic_control);
 
     cJSON_AddStringToObject(root, "state", to_string(state).c_str());
     if (sub_state) cJSON_AddStringToObject(root, "sub_state", to_string(*sub_state).c_str());

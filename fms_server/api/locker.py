@@ -38,3 +38,19 @@ def return_robot(job_id: str, body: ReturnRequest, request: Request):
     except JobError as exc:
         raise HTTPException(409, str(exc)) from None
     return {"job_id": job_id, "phase": "returning"}
+
+
+class CancelRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
+
+
+@router.post("/deliveries/{job_id}/cancel")
+def cancel_delivery(job_id: str, body: CancelRequest, request: Request):
+    """로봇 배정 전 배송 취소. 갈 수 없는 세대 물품은 보관소가 직접 수령으로 바꾼다."""
+    try:
+        unroutable = request.app.state.locker.cancel_queued(job_id, body.reason)
+    except KeyError:
+        raise HTTPException(404, "배송을 찾을 수 없다") from None
+    except JobError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"job_id": job_id, "phase": "canceled", "unroutable": unroutable}

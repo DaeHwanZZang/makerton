@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
-const phases = {queued:'배정 대기',to_pickup:'픽업스테이션 이동',awaiting_bundle:'최종 적재 목록 대기',loading:'적재 중',delivering:'세대 배송',returning:'복귀·트레이 반납',blocked:'운영자 확인 필요',done:'완료'};
 const parcelStates = {planned:'적재 예정',loading:'적재 중',onboard:'로봇 적재',unloading:'하차 중',delivered:'배송 완료',returned:'반납 완료',canceled:'미적재 종료',unknown:'확인 필요'};
 let locations = [], stations = [], lastDeliveries = '', lastParcels = '', returning = null;
+const openSteps = new Set();
 async function api(path, method='GET', body) {
   const response = await fetch(`/api/v1/${path}`, {method, headers:{'Content-Type':'application/json'}, body:body === undefined ? undefined : JSON.stringify(body)});
   const data = await response.json();
@@ -14,7 +14,11 @@ async function loadLocations() {
   const site = $('site').value ? `sites/${encodeURIComponent($('site').value)}` : null;
   [locations, stations] = site ? await Promise.all([api(`${site}/locations`), api(`${site}/pickup-stations`)]) : [[], []];
   // 픽업 지점은 세대 목적지 후보에서 뺀다.
-  locations = locations.filter(l => l.type !== 'pickup');
+  // 충전소는 반납 후 도킹 대상으로 고른다. 맵에 물리 충전기가 있는 충전소만 서버가 받아들인다.
+  const chargers = locations.filter(l => l.type === 'charger');
+  $('charger').replaceChildren(); option($('charger'),'auto','자동 (반납 지점에서 가까운 빈 충전소)'); option($('charger'),'off','도킹 안 함');
+  chargers.forEach(c => option($('charger'), c.name, `${c.name} (${c.map_id})`));
+  locations = locations.filter(l => !['pickup', 'tray_return'].includes(l.type));
   $('pickup').replaceChildren(); option($('pickup'),'','픽업스테이션 선택');
   stations.forEach(s => option($('pickup'), s.station_id, `${s.name || s.station_id} (${s.map_id})${s.status==='ok'?'':' · 연결 확인 필요'}`));
   $('mappings').replaceChildren();
@@ -38,7 +42,7 @@ $('configForm').onsubmit=async event=>{
       if (Object.hasOwn(households,key)) throw new Error(`세대 ${key}가 중복되었습니다.`);
       households[key]=row.querySelector('select').value;
     }
-    await api('locker/config','PUT',{site_id:$('site').value,pickup_station_id:$('pickup').value,households,pick_duration:Number($('pickDuration').value),drop_duration:Number($('dropDuration').value)});
+    await api('locker/config','PUT',{site_id:$('site').value,pickup_station_id:$('pickup').value,households,pick_duration:Number($('pickDuration').value),drop_duration:Number($('dropDuration').value),charger_target:$('charger').value,charge_min:Number($('chargeMin').value)});
     $('legacyPickup').hidden=true;
     $('message').textContent='목적지 연결을 저장했습니다. 대기 중인 배송부터 적용됩니다.';
   } catch(error) { showError(error); }
@@ -67,11 +71,26 @@ async function refresh() {
   if(serialized!==lastDeliveries) {
     lastDeliveries=serialized;$('deliveries').replaceChildren();
     for(const d of [...data.deliveries].reverse()) {
-      const row=document.createElement('tr');cell(row,`${d.job_id} / ${d.child_id || '—'}`);cell(row,d.robot_id);cell(row,phases[d.phase] || d.phase);
+      const row=document.createElement('tr');cell(row,`${d.job_id} / ${d.child_id || '—'}`);cell(row,d.robot_id);
+      // 배송 1건 = 픽업→적재→세대 하차→트레이 반납. 단계 목록은 FMS 계산값(관제 화면과 같음).
+      const stage=cell(row,window.deliveryView.summary(d));
+      if(d.progress){const details=document.createElement('details');const summary=document.createElement('summary');summary.textContent='단계 보기';details.open=openSteps.has(d.job_id);details.ontoggle=()=>details.open?openSteps.add(d.job_id):openSteps.delete(d.job_id);details.append(summary,window.deliveryView.steps(d.progress));stage.append(details);}
       const bundle=cell(row,d.bundle?`${d.bundle.bundle_id} · ${d.bundle.summary} ${d.bundle.progress}`:`예상 ${(d.proposed_items||[]).length}건`);
       for(const item of d.bundle?.items||[]){const small=document.createElement('small');small.textContent=`${item.tray_id} · ${item.parcel_id} · ${item.receipt_no} → ${item.household} (${item.target}) · ${parcelStates[item.status]||item.status}`;bundle.append(small);}
       const info=cell(row,d.error || '');
       if(d.phase==='blocked') {const button=document.createElement('button');button.textContent='적재물 확인·복귀';button.onclick=()=>openReturn(d);info.append(button);}
+      if(d.phase==='queued'&&!d.robot_id) {
+        // 로봇 배정 전 취소. 세대 연결이 없는 물품은 보관소가 직접 수령으로 바꾸고 나머지로 새 배송을 만든다.
+        const button=document.createElement('button');button.textContent='배송 취소';
+        button.onclick=async()=>{
+          const reason=prompt(`배송 ${d.job_id}를 취소할까요? 목적지 연결이 없는 세대 물품은 직접 수령으로 바뀝니다.\n취소 사유 (선택):`,d.error||'');
+          if(reason===null)return;
+          try{const r=await api(`locker/deliveries/${encodeURIComponent(d.job_id)}/cancel`,'POST',{reason});
+            $('message').textContent=`배송 ${d.job_id}를 취소했습니다${r.unroutable.length?` (직접 수령 전환 ${r.unroutable.join(', ')})`:''}.`;
+            lastDeliveries='';await refresh();}catch(error){showError(error);}
+        };
+        info.append(button);
+      }
       $('deliveries').append(row);
     }
   }
@@ -116,6 +135,7 @@ async function init() {
     $('site').value=data.config.site_id;await loadLocations();$('pickup').value=data.config.pickup_station_id||'';
     if(data.config.pickup_target&&!data.config.pickup_station_id){$('legacyPickup').hidden=false;$('legacyPickup').textContent=`이전 설정은 일반 목적지 '${data.config.pickup_target}'를 보관소로 씁니다. 픽업스테이션을 선택해 저장하면 전환됩니다.`;}
     $('pickDuration').value=data.config.pick_duration;$('dropDuration').value=data.config.drop_duration;
+    $('charger').value=data.config.charger_target||'auto';$('chargeMin').value=data.config.charge_min??30;
     Object.entries(data.config.households).forEach(([key,target])=>addMapping(key,target));
   } else addMapping();
   await refreshParcels();

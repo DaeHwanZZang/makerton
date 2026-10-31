@@ -47,6 +47,8 @@ struct Args {
     std::string log_level = "INFO";
     bool gui = false;
     bool path_refine = false;
+    bool center_path = true;              // 복도 중앙 주행 (A* 벽 근접 페널티)
+    double center_weight = 6.0, center_reach = 1.5;
     double friction = 0.8;                // 바퀴-바닥 마찰계수 (물리)
     double mass = 60.0;                   // 로봇 질량 kg (물리)
     std::optional<std::string> record;    // 학습/분석용 기록 폴더
@@ -105,6 +107,9 @@ bool parse_args(int argc, char** argv, Args& a) {
         else if (k == "--log-level") a.log_level = next(i);
         else if (k == "--gui") a.gui = true;
         else if (k == "--path-refine") a.path_refine = true;
+        else if (k == "--no-center-path") a.center_path = false;
+        else if (k == "--center-weight") a.center_weight = std::stod(next(i));
+        else if (k == "--center-reach") a.center_reach = std::stod(next(i));
         else if (k == "--friction") a.friction = std::stod(next(i));
         else if (k == "--mass") a.mass = std::stod(next(i));
         else if (k == "--record") a.record = next(i);
@@ -131,6 +136,7 @@ bool parse_args(int argc, char** argv, Args& a) {
                 "  --battery-low P (기본 20, WARNING LOW_BATTERY) --battery-critical P (기본 5, FATAL + DOCK 오더만)\n"
                 "  --seed N --speed-noise R --log-level LV --gui\n"
                 "  --path-refine (A* 경로를 PSO 로 다듬기, 기본 꺼짐)\n"
+                "  --no-center-path (복도 중앙 주행 끄기 = 최단 경로) --center-weight W (기본 6) --center-reach M (기본 1.5)\n"
                 "  --friction MU (바퀴-바닥 마찰계수, 기본 0.8. 낮으면 슬립이 생긴다) --mass KG (기본 60)\n"
                 "  --loc-rate HZ (라이다 위치보정 주기, 기본 5. 0 이면 보정 없는 순수 오도메트리)\n"
                 "  --loc-noise-xy M (기본 0.02) --loc-noise-theta RAD (기본 0.01) --loc-gain K (기본 0.15) --loc-dropout P (기본 0.05)\n"
@@ -303,6 +309,9 @@ int main(int argc, char** argv) {
     }
 
     executor.path_refine.enabled = args.path_refine;
+    executor.centerline.enabled = args.center_path;
+    executor.centerline.weight = args.center_weight;
+    executor.centerline.reach = args.center_reach;
     executor.path_refine.seed = seed_from_string(args.seed ? (std::to_string(*args.seed) + "-" + args.id + "-refine")
                                                            : (args.id + "-refine"));
 

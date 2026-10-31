@@ -31,6 +31,9 @@ from typing import Optional
 from fms_server.elevators import ElevatorError, ElevatorStore
 from fms_server.locations import LocationError
 
+# 승강기 탑승(전진)·하차(후진) 직선 이동 속도 (m/s). 지정하지 않으면 로봇 기본값(0.2 m/s, 도킹·주차와 같음)을 쓴다.
+ELEVATOR_STRAIGHT_SPEED = 0.6
+
 
 class RouteError(Exception):
     pass
@@ -194,11 +197,13 @@ def build_plan(commands, resolved: list[dict], start_map: str, site_id: str, ele
                 plan[-1]["label"] = f"승강기 {eid} 앞으로 이동"
                 plan.append({"t": "call", "elevator_id": eid, "map_id": a})
                 plan.append({"t": "order", "map_id": a, "label": f"승강기 {eid} 탑승 (전진)", "nodes": [
-                    _node(ga.outside, action={"type": "straight", "params": {"distance": ga.distance}})]})
+                    _node(ga.outside, action={"type": "straight",
+                                              "params": {"distance": ga.distance, "speed": ELEVATOR_STRAIGHT_SPEED}})]})
                 plan.append({"t": "ride", "elevator_id": eid, "from_map": a, "to_map": b})
                 # 하차: 아직 출발 층 맵이다. 칸 안 자세(출발 층 좌표)에서 도착 층 승강장 깊이만큼 후진
                 plan.append({"t": "order", "map_id": a, "label": f"승강기 {eid} 하차 (후진)", "nodes": [
-                    _node(ga.inside, action={"type": "straight", "params": {"distance": -gb.distance}})]})
+                    _node(ga.inside, action={"type": "straight",
+                                             "params": {"distance": -gb.distance, "speed": ELEVATOR_STRAIGHT_SPEED}})]})
                 plan.append({"t": "release", "elevator_id": eid})
                 plan.append({"t": "switch", "from_map": a, "to_map": b})
                 # 하차를 마친 자세 = 도착 층 승강장 앞. 출발 층 기준(ref_from) 오차를 도착 층(ref_to)에 옮겨 시뮬 teleport 한다

@@ -8,6 +8,7 @@ FMS 와 주고받는 토픽·메시지 형식은 이 파일에만 있다. 기존
   FMS  → ROBOT_ARRIVED                   로봇이 보관소 출력구에 도착
   서버 → BUNDLE_CONFIRMED (최종 묶음)    FMS 가 경로·엘리베이터 계획 후 출발
   FMS  → DELIVERY_RESULT / JOB_DONE      물품별 결과
+  FMS  → JOB_REJECTED                    로봇 배정 전 운영자 취소 (목적지 연결 없는 세대 물품 목록)
   서버 → JOB_CANCELLED                   도착 시점에 실을 물품이 없을 때
 """
 from __future__ import annotations
@@ -85,4 +86,11 @@ class FmsAdapter:
                     "result": result, "reason": payload.get("reason")}
         if kind == "JOB_DONE":
             return {"kind": kind, "job_id": job_id}
+        if kind == "JOB_REJECTED":
+            # 로봇 배정 전 FMS 운영자 취소. unroutable = FMS 에 목적지 연결이 없는 세대의 물품
+            unroutable = payload.get("unroutable") or []
+            if not isinstance(unroutable, list) or not all(isinstance(r, str) for r in unroutable):
+                return None
+            return {"kind": kind, "job_id": job_id, "reason": str(payload.get("reason") or ""),
+                    "unroutable": unroutable}
         return None

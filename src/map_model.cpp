@@ -3,6 +3,8 @@
 #include <cjson/cJSON.h>
 
 #include <cmath>
+#include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -71,7 +73,57 @@ MapModel MapModel::load(const std::string& metadata_path) {
     MapModel model;
     model.metadata = MapMetadata::load(metadata_path);
     model.base_dir = dirname_of(metadata_path);
+    const auto annotations = model.base_dir + "/annotations.json";
+    if (std::filesystem::exists(annotations)) {
+        const auto text = read_file(annotations);
+        cJSON* root = cJSON_Parse(text.c_str());
+        if (!root) throw std::runtime_error("invalid annotations.json");
+        struct Guard { cJSON* p; ~Guard() { cJSON_Delete(p); } } guard{root};
+        cJSON* zones = cJSON_GetObjectItemCaseSensitive(root, "zones");
+        cJSON* z;
+        cJSON_ArrayForEach(z, zones) {
+            cJSON* type = cJSON_GetObjectItemCaseSensitive(z, "type");
+            if (!cJSON_IsString(type) || std::string(type->valuestring) != "occupancy") continue;
+            cJSON* id = cJSON_GetObjectItemCaseSensitive(z, "zone_id");
+            cJSON* poly = cJSON_GetObjectItemCaseSensitive(z, "polygon");
+            if (!cJSON_IsString(id) || !cJSON_IsArray(poly)
+                    || (cJSON_GetArraySize(poly) != 4 && cJSON_GetArraySize(poly) != 5))
+                throw std::runtime_error("invalid occupancy zone");
+            std::vector<std::pair<double,double>> points;
+            cJSON* p;
+            cJSON_ArrayForEach(p, poly) {
+                cJSON* x = cJSON_GetObjectItemCaseSensitive(p, "x");
+                cJSON* y = cJSON_GetObjectItemCaseSensitive(p, "y");
+                if (!cJSON_IsNumber(x) || !cJSON_IsNumber(y) || !std::isfinite(x->valuedouble) || !std::isfinite(y->valuedouble))
+                    throw std::runtime_error("invalid occupancy polygon");
+                points.emplace_back(x->valuedouble,y->valuedouble);
+            }
+            if (points.size() == 5) {
+                if (std::hypot(points[0].first-points[4].first,points[0].second-points[4].second) >= 1e-8)
+                    throw std::runtime_error("invalid closed occupancy rectangle");
+                points.pop_back();
+            }
+            const auto [ax,ay] = points[0]; const auto [bx,by] = points[1];
+            const auto [cx,cy] = points[2]; const auto [dx,dy] = points[3];
+            const double ex=bx-ax, ey=by-ay, fx=dx-ax, fy=dy-ay;
+            const double width=std::hypot(ex,ey), height=std::hypot(fx,fy);
+            if (std::min(width,height) <= 1e-9 || std::abs(ex*fx+ey*fy) > 1e-6*width*height
+                    || std::hypot(cx-(bx+dx-ax),cy-(by+dy-ay)) > 1e-6*std::max(width,height))
+                throw std::runtime_error("occupancy zone must be a rectangle");
+            model.occupancy_zones.push_back({id->valuestring,(ax+cx)/2,(ay+cy)/2,ex/width,ey/width,width/2,height/2});
+        }
+    }
     return model;
+}
+
+bool MapModel::traffic_blocked(double x, double y, double margin, const std::vector<std::string>& allowed) const {
+    for (const auto& z : occupancy_zones) {
+        if (std::find(allowed.begin(), allowed.end(), z.id) != allowed.end()) continue;
+        const double dx=x-z.cx, dy=y-z.cy;
+        if (std::abs(z.ux*dx+z.uy*dy) <= z.half_width+margin
+                && std::abs(-z.uy*dx+z.ux*dy) <= z.half_height+margin) return true;
+    }
+    return false;
 }
 
 std::pair<int, int> MapModel::world_to_pixel(double x, double y) const {

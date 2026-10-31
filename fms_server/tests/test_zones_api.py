@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -110,6 +111,37 @@ def test_elevator_is_preserved_and_does_not_block_grid(setup):
     changed = client.put(BASE+'/zones/'+zone.zone_id, json=rectangle(r.json()['version']))
     assert changed.status_code == 200
     assert store.load_map_model('hall').cell_at(.5, .5).value == 'OCCUPIED'
+
+
+def test_rotated_forbidden_zone_bakes_actual_polygon_and_can_be_reedited(setup):
+    client, store, version, _ = setup
+    data = rectangle(version,x=1,y=0,width=3,height=.4,rotation=45)
+    r = client.post(BASE+'/zones',json=data)
+    assert r.status_code == 200, r.text
+    saved = r.json()
+    zone = store.load_annotations('hall').zone_by_id(saved['zone_id'])
+    a,b,c,d = zone.polygon
+    assert math.atan2(b.y-a.y,b.x-a.x) == pytest.approx(math.pi/4)
+    assert math.hypot(b.x-a.x,b.y-a.y) == pytest.approx(3)
+    assert math.hypot(d.x-a.x,d.y-a.y) == pytest.approx(.4)
+    model = store.load_map_model('hall')
+    assert not model.is_free(2.5,.2)
+    assert model.is_free(1.4,1.2)  # 외접 사각형 안이지만 실제 회전 영역 밖이다.
+    r = client.put(BASE+'/zones/'+saved['zone_id'],json=data|{'base_version':saved['version'],'rotation':405})
+    assert r.status_code == 200, r.text
+    assert r.json()['version'] == saved['version']
+    r = client.put(BASE+'/zones/'+saved['zone_id'],json=data|{'base_version':saved['version'],'type':'elevator','rotation':-30})
+    assert r.status_code == 200, r.text
+    assert store.load_map_model('hall').is_free(2.5,.2)
+    assert store.verify_integrity('hall') == []
+
+
+@pytest.mark.parametrize('changes',[dict(x=-1,y=-2,width=2,height=1,rotation=45),
+                                     dict(x=1,y=0,width=.01,height=1,rotation=45)])
+def test_rotated_zone_bounds_and_local_minimum_size_are_checked(setup,changes):
+    client,store,version,_ = setup
+    assert client.post(BASE+'/zones',json=rectangle(version,**changes)).status_code == 422
+    assert store.active_version('hall') == version
 
 
 @pytest.mark.parametrize('change', [

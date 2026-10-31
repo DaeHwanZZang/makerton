@@ -26,6 +26,10 @@ public:
 
     // (x, y) 가 속한 픽셀에서 가장 가까운 비-FREE 셀까지의 거리 (픽셀 단위). 범위 밖이면 0.
     double dist_px(double x, double y) const;
+    // 픽셀 인덱스로 직접 조회 (planner 의 칸 비용용). 범위 밖이면 0.
+    double dist_at(int px, int py) const {
+        return px < 0 || px >= w_ || py < 0 || py >= h_ ? 0.0 : dist_[(size_t)py * w_ + px];
+    }
     double resolution() const { return resolution_; }
 
 private:
