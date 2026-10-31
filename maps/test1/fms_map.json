@@ -1,0 +1,11 @@
+{
+  "name": "test1",
+  "image": "map.png",
+  "resolution": 0.03125,
+  "origin_x": 0.0,
+  "origin_y": 0.0,
+  "width_px": 704,
+  "height_px": 416,
+  "occupied_thresh": 64,
+  "free_thresh": 192
+}

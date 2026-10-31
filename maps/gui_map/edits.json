@@ -1,0 +1,14 @@
+{
+ "version": 1,
+ "base_image": "grid.png",
+ "size_px": [
+  1344,
+  1056
+ ],
+ "resolution": 0.03125,
+ "origin": [
+  -11.65625,
+  -11.625
+ ],
+ "shapes": []
+}

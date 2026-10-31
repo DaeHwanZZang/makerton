@@ -1,0 +1,15 @@
+# Python 도구용 (tools/*.py 맵 도구, 런처, viewer/). Python 3.11+.
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+numpy>=1.26         # gen_map / synth_map / clean_map / map_editor
+Pillow>=10.0        # 맵 PNG 입출력
+PySide6>=6.7        # map_gen_gui / map_editor / launcher / viewer
+pydantic>=2.6       # viewer (common/schemas.py, map_model.py)
+paho-mqtt>=2.1      # viewer (MQTT 구독)
+matplotlib>=3.8     # viewer (fleet_monitor 가 map_viewer 를 import 한다)
+
+# FMS 서버 (fms_server/)
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9   # 맵 업로드 (멀티파트)
+pytest>=8.0               # fms_server/tests
+httpx>=0.27               # fastapi.testclient

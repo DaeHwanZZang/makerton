@@ -1,0 +1,13 @@
+{
+  "source": "synthetic (synth_map.py)",
+  "seed": 1,
+  "tile_m": 1.0,
+  "tile_px": 32,
+  "check_passed": true,
+  "params": {
+    "robot_width": 0.5,
+    "wall_px": 2,
+    "fringe_px": 2,
+    "fringe_prob": 1.0
+  }
+}

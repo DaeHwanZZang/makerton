@@ -1,0 +1,21 @@
+*.o
+*.d
+robot_client
+map_cache/
+third_party/mujoco/
+records/
+tools/send_order
+tools/place_obstacle
+tools/obstacle_zone
+logs/
+.run/
+.venv/
+__pycache__/
+.pytest_cache/
+
+# OS
+.DS_Store
+
+# FMS 런타임 데이터 (site/맵 저장소)
+fms_server/maps/
+viewer/.map_cache/

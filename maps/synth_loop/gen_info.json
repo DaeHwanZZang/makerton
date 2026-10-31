@@ -1,0 +1,22 @@
+{
+  "source": "synthetic (synth_map.py)",
+  "seed": 1,
+  "tile_m": 1.0,
+  "tile_px": 32,
+  "check_passed": true,
+  "params": {
+    "robot_width": 0.5,
+    "wall_px": 2,
+    "fringe_px": 2,
+    "fringe_prob": 0.5,
+    "wobble_px": 1.0,
+    "dash_gap": 0.25,
+    "dash_px": 5,
+    "fur_prob": 0.06,
+    "fur_len": 10,
+    "ray_prob": 0.012,
+    "ray_len": 150
+  },
+  "edited_created": true,
+  "margin_tiles": 10
+}

@@ -1,0 +1,26 @@
+{
+  "source": "synthetic (synth_map.py)",
+  "seed": 512105,
+  "tile_m": 1.0,
+  "tile_px": 32,
+  "check_passed": false,
+  "cut": "0.5,24.5,100.5,0.5",
+  "walls": "tools/map_layouts/loop3.walls",
+  "void": "8.5,33.665 43,25.385 43,39.5 8.5,39.5; 48,24.185 82.5,15.905 82.5,39.5 48,39.5; 0.5,34 3.5,34 3.5,42.5 0.5,42.5",
+  "carve": "69.0,24.8,82.8,32.7;37.1,28.7,43.3,32.1;37.1,33.5,43.3,36.9;71.4,32.0,74.9,36.2;75.9,32.0,79.4,36.2",
+  "params": {
+    "robot_width": 0.5,
+    "wall_px": 2,
+    "fringe_px": 2,
+    "fringe_prob": 0.5,
+    "wobble_px": 0.0,
+    "dash_gap": 0.1,
+    "dash_px": 1,
+    "fur_prob": 0.16,
+    "fur_len": 40,
+    "ray_prob": 0.018,
+    "ray_len": 120
+  },
+  "edited_created": true,
+  "margin_tiles": 10
+}

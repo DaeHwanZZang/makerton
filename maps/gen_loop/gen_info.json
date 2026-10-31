@@ -1,0 +1,27 @@
+{
+  "source": "maps/641931de9eae7cecb34d5765/grid.png",
+  "seed": 1,
+  "tile_m": 1.0,
+  "tile_px": 32,
+  "check_passed": true,
+  "clean": {
+    "level": "normal",
+    "fill_hole_px": 64,
+    "open_px": 1,
+    "min_free_px": 256,
+    "wall_reach_px": 6,
+    "solid_walls": false,
+    "flatten": false
+  },
+  "params": {
+    "robot_width": 0.5,
+    "margin_px": 4,
+    "max_noise": 0,
+    "wall_band_px": 3,
+    "wall_min": 0.5,
+    "unknown_free_max": 0.08,
+    "min_real": 10
+  },
+  "edited_created": true,
+  "margin_tiles": 10
+}

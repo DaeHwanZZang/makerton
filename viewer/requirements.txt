@@ -1,0 +1,12 @@
+# 뷰어 전용 의존성 (Python 3.11+). 루트 requirements.txt 의 부분집합 —
+# 로봇 시뮬레이션/FMS 쪽 패키지는 뺐다 (뷰어는 그 코드를 import 하지 않는다).
+
+pydantic>=2.6              # common/schemas.py, common/map_model.py
+paho-mqtt>=2.1              # MQTT 구독
+Pillow>=10.0                # 맵 PNG 디코드 (common/map_model.py)
+numpy>=1.26                 # 맵 grid 배열
+matplotlib>=3.8             # 정적 확인용 구 뷰어 (tools/map_viewer.py). 라이브 뷰어엔 필수 아님
+PySide6>=6.7                # 라이브 뷰어 (tools/qt_viewer.py, tools/fleet_monitor_qt.py)
+
+# macOS 메뉴바 앱 이름 표시용. 없어도 조용히 무시된다
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"

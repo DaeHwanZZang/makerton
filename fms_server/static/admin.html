@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FMS · 실시간 맵</title>
+<link rel="stylesheet" href="/static/fms.css">
+<script src="/static/robot-details.js" defer></script>
+<script src="/static/fms.js" defer></script>
+<script src="/static/zone-editor.js" defer></script>
+<script src="/static/map-points.js" defer></script>
+<script src="/static/elevators.js" defer></script>
+<script src="/static/elevator-status.js" defer></script>
+<script src="/static/jobs.js" defer></script>
+</head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="#map"><span class="brand-mark">F</span><span>Fleet <b>control</b><small>AMR 운영 시스템</small></span></a>
+  <nav aria-label="주 메뉴">
+    <button data-page="map" class="active"><span>◎</span>실시간 맵</button>
+    <button data-page="robots"><span>▣</span>로봇</button>
+    <button data-page="jobs"><span>≡</span>작업 게시판</button>
+    <button data-page="presets"><span>▤</span>작업 프리셋</button>
+    <div class="nav-divider"></div>
+    <button data-page="maps"><span>▱</span>맵 관리</button>
+    <button data-page="locations"><span>⌖</span>목적지·도킹</button>
+    <button data-page="elevators"><span>⇅</span>엘리베이터</button>
+    <button data-page="settings"><span>⚙</span>현장 설정</button>
+  </nav>
+  <div class="sidebar-bottom"><span class="status-dot" id="serverDot"></span><span id="serverStatus">서버 연결 중</span></div>
+</aside>
+<main>
+  <header class="topbar">
+    <h1 id="pageTitle">실시간 맵</h1>
+    <div class="context"><label for="siteSelect">현장</label><select id="siteSelect" aria-label="현장 선택"></select><span class="slash">/</span><label for="mapSelect">맵</label><select id="mapSelect" aria-label="맵 선택"></select></div>
+    <button id="refresh" class="quiet" title="현재 데이터 새로고침" aria-label="새로고침">↻</button>
+  </header>
+  <section id="page-map" class="page map-page">
+    <div id="mapStage" tabindex="0" aria-label="실시간 맵. 드래그로 이동, 휠로 확대. 더하기·빼기 키로 확대·축소, 0 키로 전체 맞춤.">
+      <canvas id="mapCanvas" aria-label="로봇, 구역, 목적지가 표시되는 현장 맵"></canvas>
+      <div id="mapEmpty" class="map-empty"><span>⌖</span><h2>현장 맵을 불러오세요</h2><p>현장을 선택하고 활성 맵을 확인하세요.</p><button data-goto="maps">맵 관리 열기</button></div>
+      <div class="map-caption"><span id="mapCaption">선택한 맵 없음</span><span id="mapLive" class="muted"></span></div>
+      <div class="map-tools">
+        <div class="map-actions">
+          <details id="addObjectMenu" class="add-object-menu">
+            <summary id="mapAddButton" aria-label="맵에 객체 추가" title="맵에 객체 추가">＋</summary>
+            <div class="add-object-options">
+              <button id="addZone" type="button">▱ 구역 <small>Zone</small></button>
+              <button id="addLocation" type="button">⌖ 목적지 <small>Location</small></button>
+              <button id="addDockingStation" type="button">▣ 도킹 스테이션 <small>충전</small></button>
+            </div>
+          </details>
+        <details id="layers"><summary>▱ 표시 항목</summary><div class="layer-options">
+          <label><input type="checkbox" data-layer="robots" checked> 로봇</label>
+          <label><input type="checkbox" data-layer="zones" checked> 구역</label>
+          <label><input type="checkbox" data-layer="locations" checked> 목적지</label>
+          <label><input type="checkbox" data-layer="docks" checked> 충전·주차 지점</label>
+          <label><input type="checkbox" data-layer="labels" checked> 이름</label>
+        </div></details></div>
+        <div class="zoom-tools"><button id="zoomOut" aria-label="축소">−</button><button id="zoomIn" aria-label="확대">+</button><button id="fitMap">전체 맞춤</button></div>
+      </div>
+      <div id="objectInfo" class="object-info" hidden><button id="closeInfo" class="close" aria-label="선택 해제">×</button><div id="objectContent"></div></div>
+      <section id="zoneEditor" class="zone-editor" aria-label="사각형 구역 편집" hidden>
+        <h3 id="zoneEditorTitle">구역 그리기</h3>
+        <p id="zoneHint" role="status">맵에서 드래그해 사각형을 만드세요.</p>
+        <form id="zoneForm">
+          <label>구역 이름<input name="name" required maxlength="128" placeholder="구역 이름"></label>
+          <label>구역 종류<select name="type"><option value="prohibit">주행금지구역 (Forbidden zone)</option><option value="elevator">엘리베이터 구역</option></select></label>
+          <div class="zone-dimensions">
+            <label>X (m)<input name="x" type="number" step="any" required></label>
+            <label>Y (m)<input name="y" type="number" step="any" required></label>
+            <label>가로 (m)<input name="width" type="number" step="any" required min="0.001"></label>
+            <label>세로 (m)<input name="height" type="number" step="any" required min="0.001"></label>
+          </div>
+          <p class="muted">저장하면 새 맵 버전을 활성화하고 로봇에 전달합니다. 엘리베이터 구역은 위치 표시용입니다.</p>
+          <div class="zone-buttons"><button id="saveZone" class="primary" disabled>구역 저장</button><button id="cancelZone" type="button">취소</button></div>
+        </form>
+      </section>
+      <section id="mapPointEditor" class="zone-editor" aria-label="맵 위치 추가" hidden>
+        <h3 id="mapPointTitle">목적지 추가</h3>
+        <p id="mapPointHint" role="status">맵에서 위치를 클릭하거나 드래그해 방향을 정하세요.</p>
+        <form id="mapPointForm">
+          <label>이름<input name="name" required maxlength="128" placeholder="목적지 이름"></label>
+          <label id="mapPointTypeLabel">용도<select name="type"><option value="station">작업 지점</option><option value="waypoint">경유점</option><option value="parking">주차 지점</option><option value="other">기타</option></select></label>
+          <div class="zone-dimensions">
+            <label>X (m)<input name="x" type="number" step="any" required></label>
+            <label>Y (m)<input name="y" type="number" step="any" required></label>
+          </div>
+          <label>방향 (°)<input name="heading" type="number" step="any" required></label>
+          <label id="mapPointEntryLabel" hidden>진입 방향<select name="entry"><option value="FORWARD">전진 진입</option><option value="BACKWARD">후진 진입</option></select></label>
+          <p id="mapPointDescription" class="muted">저장하면 현재 맵의 작업 목적지로 사용할 수 있습니다.</p>
+          <div class="zone-buttons"><button id="saveMapPoint" class="primary" disabled>저장</button><button id="cancelMapPoint" type="button">취소</button></div>
+        </form>
+      </section>
+      <span class="map-scale" id="mapScale"></span>
+    </div>
+  </section>
+  <section id="page-robots" class="page content-page" hidden>
+    <div class="page-heading"><div><h2>로봇</h2><p>선택한 현장의 등록 로봇과 실시간 상태를 확인합니다.</p></div></div>
+    <div class="panel"><h3>로봇 등록</h3><form id="robotForm"><label>로봇 ID<input name="robot_id" placeholder="AMR-001" required></label><label>배정 맵<select name="map_id" class="map-options" required></select></label><button class="primary">로봇 등록</button></form></div>
+    <div class="table-wrap"><table><thead><tr><th>로봇</th><th>연결</th><th>상태</th><th>배터리</th><th>배정 맵</th><th>맵 동기화</th><th>조작</th></tr></thead><tbody id="robotRows"></tbody></table></div>
+    <details class="panel"><summary>미등록 로봇</summary><div id="unregistered"></div></details>
+  </section>
+  <section id="page-jobs" class="page content-page" hidden>
+    <div class="page-heading"><div><h2>작업 게시판</h2><p>작업 묶음을 게시하면 FMS가 같은 현장·맵의 가용 로봇을 찾아 배정합니다.</p></div></div>
+    <div class="panel"><h3>프리셋에서 작업 생성</h3><form id="publishForm">
+      <label>작업 프리셋<select id="publishPreset" required></select></label>
+      <label>배정 방식<select id="publishMode"><option value="board">게시판 등록 · 자동 배정</option><option value="direct">로봇 지정 · 즉시 실행</option></select></label>
+      <label id="publishRobotLabel" hidden>로봇<select id="publishRobot"></select></label><button class="primary">작업 생성</button>
+    </form><p id="publishPreview" class="muted">프리셋을 먼저 등록하세요.</p></div>
+    <div class="job-filters" role="group" aria-label="작업 상태 필터"><button data-job-filter="pending" class="active">게시판</button><button data-job-filter="active">배정·실행 중</button><button data-job-filter="history">작업 이력</button></div>
+    <details class="panel"><summary>프리셋 없이 이동 작업 만들기</summary>
+    <div class="panel"><h3>작업 만들기</h3><form id="jobForm"><label>로봇<select name="robot_id" id="jobRobot"></select></label><label>목적지<select name="target" id="jobTarget"></select></label><button type="button" id="addStep">경유지 추가</button><button class="primary">작업 생성</button></form><div id="jobSteps" class="muted">선택한 목적지로 이동합니다.</div></div>
+    </details>
+    <div class="table-wrap"><table><thead><tr><th>작업 ID / 프리셋</th><th>상태</th><th>로봇</th><th>방문 순서</th><th>진행</th><th>오류</th><th>조작</th></tr></thead><tbody id="jobRows"></tbody></table></div>
+  </section>
+  <section id="page-presets" class="page content-page" hidden>
+    <div class="page-heading"><div><h2>작업 프리셋</h2><p>이동·대기·도킹·주차 단계를 묶어 재사용합니다. 생성된 작업은 프리셋 수정의 영향을 받지 않습니다.</p></div></div>
+    <div class="panel"><h3 id="presetTitle">프리셋 만들기</h3>
+      <label class="preset-name">프리셋 이름<input id="presetName" maxlength="128" placeholder="A구역 순회 후 도킹"></label>
+      <form id="stepForm">
+        <label>단계 종류<select id="stepType"><option value="move">이동</option><option value="wait">대기</option><option value="docking">충전 도킹</option><option value="parking">주차</option></select></label>
+        <label id="stepTargetLabel">목적지<select id="stepTarget"></select></label>
+        <label id="stepDurationLabel" hidden>대기 시간 (초)<input id="stepDuration" type="number" min="0.1" step="any" value="10"></label>
+        <label class="dock-field" hidden>진입 방향<select id="stepEntry"><option value="FORWARD">전진</option><option value="BACKWARD">후진</option></select></label>
+        <label class="dock-field" hidden>진입 거리 (m)<input id="stepDistance" type="number" min="0.01" step="any" value="0.6"></label>
+        <label class="dock-field" hidden>진입 속도 (m/s)<input id="stepSpeed" type="number" min="0.01" step="any" value="0.2"></label>
+        <label id="stepChargeLabel" hidden>다음 작업 수락 기준 (%)<input id="stepCharge" type="number" min="0" max="100" value="80"></label>
+        <button id="saveStep">단계 추가</button><button type="button" id="cancelStep" hidden>단계 수정 취소</button>
+      </form>
+      <p id="stepHelp" class="muted">목적지는 모두 같은 맵이어야 합니다.</p>
+      <ol id="presetSteps" class="preset-steps"></ol>
+      <div class="preset-actions"><button id="savePreset" class="primary">프리셋 저장</button><button id="resetPreset">새로 만들기</button></div>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>프리셋</th><th>단계</th><th>수정 시각</th><th></th></tr></thead><tbody id="presetRows"></tbody></table></div>
+  </section>
+  <section id="page-maps" class="page content-page" hidden>
+    <div class="page-heading"><div><h2>맵 관리</h2><p>맵을 업로드하고 현장에서 사용할 버전을 활성화합니다.</p></div></div>
+    <div class="panel"><h3>맵 업로드</h3><form id="mapForm"><label>맵 ID<input name="map_id" placeholder="floor-1" required></label><label>맵 파일<input name="files" type="file" multiple required></label><label>노이즈 정리 횟수<input name="despeckle_iterations" type="number" value="0" min="0" max="20"></label><label class="check"><input name="activate" type="checkbox" checked>업로드 후 활성화</label><button class="primary">맵 업로드</button></form><p class="muted">생성 맵: fms_map.json과 참조 PNG. 벤더 맵: grid_cfg.grid와 항법 PNG. 위치·구역 파일은 선택입니다.</p></div>
+    <div class="table-wrap"><table><thead><tr><th>맵</th><th>활성 버전</th><th>버전 선택·활성화</th><th></th></tr></thead><tbody id="mapRows"></tbody></table></div>
+  </section>
+  <section id="page-locations" class="page content-page" hidden>
+    <div class="page-heading"><div><h2>목적지·도킹</h2><p>목적지의 좌표와 방향을 관리합니다. 충전·주차 지점은 맵에서 별도 기호로 표시합니다.</p></div></div>
+    <div class="panel"><h3 id="locFormTitle">목적지 등록</h3><form id="locForm"><label>이름<input name="name" required placeholder="충전소-A"></label><label>맵<select name="map_id" class="map-options" required></select></label><label>X (m)<input name="x" type="number" step="any" required></label><label>Y (m)<input name="y" type="number" step="any" required></label><label>방향 (rad)<input name="theta" type="number" step="any" value="0" required></label><label>용도<select name="type"><option value="station">작업 지점</option><option value="charger">충전소</option><option value="parking">주차 지점</option><option value="waypoint">경유점</option><option value="other">기타</option></select></label><button class="primary">저장</button><button type="button" id="cancelLocEdit" hidden>편집 취소</button></form></div>
+    <h3>등록한 목적지</h3><div class="table-wrap"><table><thead><tr><th>이름</th><th>맵</th><th>용도</th><th>X / Y / 방향</th><th></th></tr></thead><tbody id="locationRows"></tbody></table></div>
+    <h3>맵에 포함된 위치</h3><p class="muted">선택한 맵 버전의 원본 위치입니다. 작업 목적지로 쓰려면 가져오기를 누르세요.</p><div class="table-wrap"><table><thead><tr><th>이름</th><th>용도</th><th>X / Y / 방향</th><th></th></tr></thead><tbody id="annotationRows"></tbody></table></div>
+  </section>
+  <section id="page-elevators" class="page content-page" hidden>
+    <div class="page-heading"><div><h2>엘리베이터</h2><p>승강기의 현재 층과 동작 상태를 확인하고, 층별 구역을 연결합니다.</p></div></div>
+    <section class="elevator-live" aria-label="승강기 운행 상태">
+      <div class="elev-live-heading"><h3>승강기 운행 상태</h3><span id="elevatorStatusSource" class="muted">상태 확인 중</span></div>
+      <p id="elevatorStatusNotice" class="muted" role="status" hidden></p>
+      <div class="table-wrap"><table><thead><tr><th>승강기</th><th>현재 층</th><th>동작 상태</th><th>목표 층</th><th>문 상태</th><th>수신 상태</th></tr></thead><tbody id="elevatorStatusRows"><tr><td colspan="6" class="empty-row">운행 상태를 확인합니다.</td></tr></tbody></table></div>
+    </section>
+    <div id="elevatorBody"></div>
+  </section>
+  <section id="page-settings" class="page content-page" hidden>
+    <div class="page-heading"><div><h2>현장 설정</h2><p>현장을 등록하고 서버 연결 상태를 확인합니다.</p></div></div>
+    <div class="panel"><h3>현장 등록</h3><form id="siteForm"><label>현장 ID<input name="site_id" placeholder="hq" required></label><label>현장 이름<input name="name" placeholder="본사" required></label><button class="primary">현장 등록</button></form></div>
+    <div class="table-wrap"><table><thead><tr><th>현장</th><th>ID</th><th>맵</th><th>로봇</th><th></th></tr></thead><tbody id="siteRows"></tbody></table></div>
+    <div class="panel"><h3>서버 상태</h3><p id="healthDetail">확인 중</p><details><summary>최근 알림</summary><div id="log"></div></details></div>
+  </section>
+  <div id="notice" role="status" hidden><span></span><button aria-label="알림 닫기">×</button></div>
+</main>
+</body>
+</html>
